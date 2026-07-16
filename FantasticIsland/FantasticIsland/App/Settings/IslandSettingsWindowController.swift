@@ -10,6 +10,16 @@ final class IslandSettingsWindowController: NSObject, NSWindowDelegate {
         self.model = model
     }
 
+    func prepare() {
+        guard let model, windowController == nil else {
+            return
+        }
+
+        // Build the hosting hierarchy while the app is idle. The first click
+        // on the settings button then only needs to show an existing window.
+        windowController = makeWindowController(model: model)
+    }
+
     func show() {
         guard let model else {
             return
@@ -17,10 +27,6 @@ final class IslandSettingsWindowController: NSObject, NSWindowDelegate {
 
         let controller = windowController ?? makeWindowController(model: model)
         windowController = controller
-
-        if let hostingController = controller.contentViewController as? NSHostingController<IslandSettingsView> {
-            hostingController.rootView = IslandSettingsView(model: model)
-        }
 
         NSApplication.shared.activate(ignoringOtherApps: true)
         controller.showWindow(nil)

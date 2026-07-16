@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import Foundation
 import ServiceManagement
 import SwiftUI
@@ -70,6 +71,10 @@ final class IslandAppModel: ObservableObject {
     @Published private(set) var windDriveCustomLogoPath = ""
     @Published private(set) var windDriveCustomLogoImage: NSImage?
     @Published private(set) var enabledModuleIDs: Set<String> = []
+    @Published private(set) var closedWidthAdjustment: CGFloat = 0
+    @Published private(set) var closedHeightAdjustment: CGFloat = 0
+    @Published private(set) var expandedWidthAdjustment: CGFloat = 0
+    @Published private(set) var expandedHeightAdjustment: CGFloat = 0
     @Published var islandExpanded = false
     @Published private(set) var islandPeeking = false
     @Published private(set) var islandClosedHovering = false
@@ -126,10 +131,15 @@ final class IslandAppModel: ObservableObject {
     private var pendingDirtyModules: Set<String> = []
     private var pendingActivityReconcile = false
     private var pendingMeasuredHeights: [String: CGFloat] = [:]
+    private var moduleRefreshScheduled = false
+    private var designTokenRefreshScheduled = false
     private var spinAnchorDate = Date()
     private var spinAnchorDegrees = 0.0
     private var lastAggregateRefreshAt = Date()
     private var displayedScore = 0.0
+    private let systemCPULoadMonitor = SystemCPULoadMonitor()
+    private var cpuLoadTimer: Timer?
+    private var smoothedCPULoad = 0.0
     private var hasPrimedAudioState = false
     private var pendingTransitionRevealWorkItem: DispatchWorkItem?
     private var pendingTransitionSettleWorkItem: DispatchWorkItem?
@@ -167,6 +177,18 @@ final class IslandAppModel: ObservableObject {
         self.usesCustomWindDriveLogo = defaults.bool(forKey: IslandDefaults.windDriveUsesCustomLogoKey)
         self.windDriveCustomLogoPath = defaults.string(forKey: IslandDefaults.windDriveCustomLogoPathKey) ?? ""
         self.enabledModuleIDs = loadedEnabledModuleIDs
+        self.closedWidthAdjustment = Self.loadLayoutAdjustment(
+            defaults.double(forKey: IslandDefaults.closedWidthAdjustmentKey)
+        )
+        self.closedHeightAdjustment = Self.loadLayoutAdjustment(
+            defaults.double(forKey: IslandDefaults.closedHeightAdjustmentKey)
+        )
+        self.expandedWidthAdjustment = Self.loadLayoutAdjustment(
+            defaults.double(forKey: IslandDefaults.expandedWidthAdjustmentKey)
+        )
+        self.expandedHeightAdjustment = Self.loadLayoutAdjustment(
+            defaults.double(forKey: IslandDefaults.expandedHeightAdjustmentKey)
+        )
         self.selectedModuleID = loadedEnabledModuleIDs.contains(codexFanModule.id)
             ? codexFanModule.id
             : loadedEnabledModuleIDs.first ?? codexFanModule.id
@@ -179,7 +201,15 @@ final class IslandAppModel: ObservableObject {
         bindModules()
         refreshFromModules(now: .now)
         shellController.show(using: self)
+        startCPULoadMonitoring()
         _ = globalHotKeyController
+
+        // Warm up the settings hierarchy after the initial island has been
+        // presented so the first settings click does not pay the construction
+        // cost on the interaction path.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.settingsWindowController.prepare()
+        }
     }
 
     var modules: [any IslandModule] {
@@ -337,7 +367,10 @@ final class IslandAppModel: ObservableObject {
             || transitionPhase != .stable
     }
     var closedSurfaceHeight: CGFloat {
-        IslandShellController.defaultNotchSize.height
+        max(
+            24,
+            IslandShellController.defaultNotchSize.height + closedHeightAdjustment
+        )
     }
     var peekContentHeight: CGFloat {
         if let plan = currentTransitionPlan {
@@ -589,35 +622,31 @@ final class IslandAppModel: ObservableObject {
 
     func selectModule(id: String) {
         if enabledModuleIDs.contains(id) || moduleRegistry.module(id: id) != nil {
-            let fromState = logicalPresentationState
             let didChange = selectedModuleID != id
             selectedModuleID = id
-            if didChange {
-                reconcileActivities(allowAutoPresentation: false)
+            guard didChange else {
+                return
             }
-            if didChange, islandExpanded {
+
+            if islandExpanded {
                 if islandLayoutTransitionInFlight {
-                    if let plan = currentTransitionPlan,
-                       plan.from.visualMode == .expanded,
-                       plan.to.visualMode == .expanded {
-                        startTransition(from: plan.to, to: logicalPresentationState) { [weak self] in
-                            guard let self else {
-                                return
-                            }
-                            self.shellController.prepareForExpansion(using: self)
-                        }
-                    } else {
-                        pendingExpandedLayoutRefresh = true
-                    }
-                } else {
-                    startTransition(from: fromState, to: logicalPresentationState) { [weak self] in
-                        guard let self else {
-                            return
-                        }
-                        self.shellController.prepareForExpansion(using: self)
-                    }
+                    // Let the current open/close transition finish, then the
+                    // settle pass will refresh the newly selected module.
+                    pendingExpandedLayoutRefresh = true
+                    return
                 }
-            } else if didChange {
+
+                // Manual tab changes should not restart the whole island morph.
+                // Keep the expanded state, replace the visible module, then resize
+                // once using the new module's measured/preferred height.
+                if presentedActivity?.moduleID != id {
+                    presentedActivity = nil
+                }
+                pendingExpandedLayoutRefresh = false
+                rebuildStableRenderSnapshots()
+                shellController.reposition()
+            } else {
+                reconcileActivities(allowAutoPresentation: false)
                 rebuildStableRenderSnapshots()
             }
         }
@@ -724,6 +753,37 @@ final class IslandAppModel: ObservableObject {
         UserDefaults.standard.set(language.rawValue, forKey: IslandDefaults.interfaceLanguageKey)
     }
 
+    func setClosedWidthAdjustment(_ value: Double) {
+        applyLayoutAdjustment(value, defaultsKey: IslandDefaults.closedWidthAdjustmentKey) {
+            self.closedWidthAdjustment = $0
+        }
+    }
+
+    func setClosedHeightAdjustment(_ value: Double) {
+        applyLayoutAdjustment(value, defaultsKey: IslandDefaults.closedHeightAdjustmentKey) {
+            self.closedHeightAdjustment = $0
+        }
+    }
+
+    func setExpandedWidthAdjustment(_ value: Double) {
+        applyLayoutAdjustment(value, defaultsKey: IslandDefaults.expandedWidthAdjustmentKey) {
+            self.expandedWidthAdjustment = $0
+        }
+    }
+
+    func setExpandedHeightAdjustment(_ value: Double) {
+        applyLayoutAdjustment(value, defaultsKey: IslandDefaults.expandedHeightAdjustmentKey) {
+            self.expandedHeightAdjustment = $0
+        }
+    }
+
+    func resetIslandLayoutAdjustments() {
+        setClosedWidthAdjustment(0)
+        setClosedHeightAdjustment(0)
+        setExpandedWidthAdjustment(0)
+        setExpandedHeightAdjustment(0)
+    }
+
     func setWindDriveLogoPreset(_ preset: WindDriveLogoPreset) {
         windDriveLogoPreset = preset
         usesCustomWindDriveLogo = false
@@ -791,7 +851,21 @@ final class IslandAppModel: ObservableObject {
     }
 
     func openSettings() {
+        // Settings is a separate window. Opening it from the expanded island
+        // should close the island so the settings window remains unobstructed
+        // and can receive normal mouse input.
+        if islandExpanded || islandPeeking {
+            collapseIsland()
+        }
         settingsWindowController.show()
+    }
+
+    func isSettingsWindow(_ window: NSWindow?) -> Bool {
+        guard let window else {
+            return false
+        }
+
+        return window.title == "Settings"
     }
 
 #if DEBUG
@@ -846,10 +920,7 @@ final class IslandAppModel: ObservableObject {
                         return
                     }
 
-                    self.objectWillChange.send()
-                    if self.islandExpanded || self.islandPeeking {
-                        self.shellController.reposition(refreshRootView: true)
-                    }
+                    self.scheduleDesignTokenRefresh()
                 }
             }
             .store(in: &cancellables)
@@ -864,19 +935,55 @@ final class IslandAppModel: ObservableObject {
                         return
                     }
 
-                    if self.islandLayoutTransitionInFlight {
-                        IslandTransitionDiagnostics.publish("defer module publish id=\(module.id)")
-                        self.pendingDirtyModules.insert(module.id)
-                        self.pendingAggregateRefresh = true
-                        self.pendingActivityReconcile = true
-                        return
-                    }
-
-                    self.objectWillChange.send()
-                    self.refreshFromModules(now: .now)
+                    self.scheduleModuleRefresh(for: module.id)
                 }
             }
             .store(in: &cancellables)
+    }
+
+    private func scheduleDesignTokenRefresh() {
+        guard !designTokenRefreshScheduled else {
+            return
+        }
+
+        designTokenRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.designTokenRefreshScheduled = false
+            self.objectWillChange.send()
+            if self.islandExpanded || self.islandPeeking {
+                self.shellController.reposition(refreshRootView: true)
+            }
+        }
+    }
+
+    private func scheduleModuleRefresh(for moduleID: String) {
+        pendingDirtyModules.insert(moduleID)
+        guard !moduleRefreshScheduled else {
+            return
+        }
+
+        moduleRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.moduleRefreshScheduled = false
+            if self.islandLayoutTransitionInFlight {
+                IslandTransitionDiagnostics.publish("defer module publish")
+                self.pendingAggregateRefresh = true
+                self.pendingActivityReconcile = true
+                return
+            }
+
+            self.pendingDirtyModules.removeAll()
+            self.objectWillChange.send()
+            self.refreshFromModules(now: .now)
+        }
     }
 
     private func syncFanModulePresentation() {
@@ -1142,16 +1249,12 @@ final class IslandAppModel: ObservableObject {
         lastAggregateRefreshAt = now
 
         let aggregated = TaskActivityAggregator.aggregate(modules.map { $0.taskActivityContribution })
-        let speedTier = FanSpeedTier.resolve(
-            hasActivitySource: aggregated.supportsIdleSpin,
-            inProgressTaskCount: aggregated.inProgressTaskCount
-        )
         let decayFactor = pow(0.92, delta / 0.2)
         displayedScore = max(aggregated.activityScore, displayedScore * decayFactor)
         activityState = FanActivityState(
             activityScore: displayedScore,
-            isSpinning: speedTier.isSpinning,
-            rotationPeriod: speedTier.rotationPeriod,
+            isSpinning: true,
+            rotationPeriod: cpuRotationPeriod(for: smoothedCPULoad),
             activeSessionCount: aggregated.activeTaskCount,
             inProgressSessionCount: aggregated.inProgressTaskCount,
             busySessionCount: aggregated.busyTaskCount,
@@ -1168,6 +1271,74 @@ final class IslandAppModel: ObservableObject {
         reconcileActivities(allowAutoPresentation: true)
         rebuildStableRenderSnapshots()
         syncAudioState()
+    }
+
+    private func startCPULoadMonitoring() {
+        sampleSystemCPULoad()
+        cpuLoadTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.sampleSystemCPULoad()
+            }
+        }
+    }
+
+    private func sampleSystemCPULoad() {
+        systemCPULoadMonitor.sample { [weak self] load in
+            Task { @MainActor [weak self] in
+                self?.applySystemCPULoad(load)
+            }
+        }
+    }
+
+    private func applySystemCPULoad(_ load: Double) {
+        let normalizedLoad = min(max(load, 0), 1)
+        smoothedCPULoad = (smoothedCPULoad * 0.75) + (normalizedLoad * 0.25)
+
+        let previousState = activityState
+        let nextRotationPeriod = cpuRotationPeriod(for: smoothedCPULoad)
+        guard abs(previousState.rotationPeriod - nextRotationPeriod) >= 0.01 else {
+            return
+        }
+
+        let now = Date()
+        let preservedRotation = normalizedRotation(
+            FanRotationMath.degrees(
+                anchorDate: spinAnchorDate,
+                anchorDegrees: spinAnchorDegrees,
+                rotationPeriod: previousState.rotationPeriod,
+                isSpinning: previousState.isSpinning,
+                at: now
+            )
+        )
+
+        activityState = FanActivityState(
+            activityScore: previousState.activityScore,
+            isSpinning: true,
+            rotationPeriod: nextRotationPeriod,
+            activeSessionCount: previousState.activeSessionCount,
+            inProgressSessionCount: previousState.inProgressSessionCount,
+            busySessionCount: previousState.busySessionCount,
+            lastEventAt: previousState.lastEventAt
+        )
+
+        updateSpinAnchor(
+            previousState: previousState,
+            nextState: activityState,
+            preservedRotation: preservedRotation,
+            now: now
+        )
+        syncFanModulePresentation()
+    }
+
+    private func cpuRotationPeriod(for load: Double) -> Double {
+        // Match the requested points exactly:
+        // 0%=2.0s, 25%=1.5s, 50%=1.0s, 75%=0.75s, 100%=0.5s.
+        let normalizedLoad = min(max(load, 0), 1)
+        if normalizedLoad <= 0.5 {
+            return 2.0 - (normalizedLoad * 2.0)
+        }
+
+        return 1.0 - ((normalizedLoad - 0.5) * 1.0)
     }
 
     private func reconcileActivities(allowAutoPresentation: Bool) {
@@ -1709,6 +1880,21 @@ final class IslandAppModel: ObservableObject {
         }
     }
 
+    private func applyLayoutAdjustment(
+        _ value: Double,
+        defaultsKey: String,
+        setter: (CGFloat) -> Void
+    ) {
+        let normalizedValue = Self.loadLayoutAdjustment(value)
+        setter(normalizedValue)
+        UserDefaults.standard.set(Double(normalizedValue), forKey: defaultsKey)
+        shellController.reposition(refreshRootView: true)
+    }
+
+    private static func loadLayoutAdjustment(_ value: Double) -> CGFloat {
+        CGFloat(min(200, max(-200, value.rounded())))
+    }
+
     private static func loadEnabledModuleIDs(
         defaults: UserDefaults,
         availableModules: [any IslandModule]
@@ -1740,5 +1926,78 @@ final class IslandAppModel: ObservableObject {
         }
 
         return NSImage(contentsOf: URL(fileURLWithPath: path))
+    }
+}
+
+private final class SystemCPULoadMonitor {
+    private struct TickSnapshot {
+        let idle: UInt64
+        let total: UInt64
+    }
+
+    private let queue = DispatchQueue(
+        label: "io.github.fantasticisland.cpu-load-monitor",
+        qos: .utility
+    )
+    private var previousSnapshot: TickSnapshot?
+
+    func sample(completion: @escaping (Double) -> Void) {
+        queue.async { [weak self] in
+            guard let self, let snapshot = Self.readSnapshot() else {
+                return
+            }
+
+            let load: Double
+            if let previousSnapshot = self.previousSnapshot {
+                let idleDelta = snapshot.idle >= previousSnapshot.idle
+                    ? snapshot.idle - previousSnapshot.idle
+                    : 0
+                let totalDelta = snapshot.total >= previousSnapshot.total
+                    ? snapshot.total - previousSnapshot.total
+                    : 0
+                load = totalDelta > 0
+                    ? 1 - min(1, Double(idleDelta) / Double(totalDelta))
+                    : 0
+            } else {
+                // The first sample establishes the baseline. The following
+                // sample supplies the first real CPU usage interval.
+                load = 0
+            }
+
+            self.previousSnapshot = snapshot
+            completion(load)
+        }
+    }
+
+    private static func readSnapshot() -> TickSnapshot? {
+        var cpuLoad = host_cpu_load_info()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<host_cpu_load_info>.stride / MemoryLayout<integer_t>.stride
+        )
+
+        let result = withUnsafeMutablePointer(to: &cpuLoad) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics(
+                    mach_host_self(),
+                    HOST_CPU_LOAD_INFO,
+                    $0,
+                    &count
+                )
+            }
+        }
+
+        guard result == KERN_SUCCESS else {
+            return nil
+        }
+
+        let user = UInt64(cpuLoad.cpu_ticks.0)
+        let system = UInt64(cpuLoad.cpu_ticks.1)
+        let idle = UInt64(cpuLoad.cpu_ticks.2)
+        let nice = UInt64(cpuLoad.cpu_ticks.3)
+
+        return TickSnapshot(
+            idle: idle,
+            total: user + system + idle + nice
+        )
     }
 }

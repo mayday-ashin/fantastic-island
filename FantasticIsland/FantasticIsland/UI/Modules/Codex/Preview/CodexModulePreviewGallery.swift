@@ -29,6 +29,7 @@ private struct CodexPreviewCard: View {
     }
 }
 
+#if DEBUG
 #Preview("Codex Gallery") {
     ScrollView {
         VStack(alignment: .leading, spacing: 24) {
@@ -73,3 +74,4 @@ private struct CodexPreviewCard: View {
     .background(Color(red: 0.06, green: 0.06, blue: 0.08))
     .preferredColorScheme(.dark)
 }
+#endif

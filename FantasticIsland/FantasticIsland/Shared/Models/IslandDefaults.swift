@@ -10,6 +10,10 @@ enum IslandDefaults {
     static let windDriveCustomLogoPathKey = "island.settings.windDrive.customLogoPath"
     static let enabledModuleIDsKey = "island.settings.enabledModuleIDs"
     static let fanModuleDefaultEnabledMigrationKey = "island.settings.fanModule.defaultEnabledMigration"
+    static let closedWidthAdjustmentKey = "island.settings.layout.closedWidthAdjustment"
+    static let closedHeightAdjustmentKey = "island.settings.layout.closedHeightAdjustment"
+    static let expandedWidthAdjustmentKey = "island.settings.layout.expandedWidthAdjustment"
+    static let expandedHeightAdjustmentKey = "island.settings.layout.expandedHeightAdjustment"
 
     private static let legacyAudioMutedKey = "audioMuted"
 

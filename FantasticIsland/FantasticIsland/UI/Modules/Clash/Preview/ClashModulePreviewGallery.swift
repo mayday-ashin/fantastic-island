@@ -21,6 +21,7 @@ private struct ClashPreviewCard: View {
     }
 }
 
+#if DEBUG
 #Preview("Clash Gallery") {
     ScrollView {
         VStack(alignment: .leading, spacing: 24) {
@@ -51,3 +52,4 @@ private struct ClashPreviewCard: View {
     .background(Color(red: 0.06, green: 0.06, blue: 0.08))
     .preferredColorScheme(.dark)
 }
+#endif

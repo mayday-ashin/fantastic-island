@@ -79,10 +79,11 @@ struct IslandShellView: View {
     }
 
     private var closedContentWidth: CGFloat {
-        model.closedSurfaceWidth(
+        let baseWidth = model.closedSurfaceWidth(
             baseCompactWidth: compactWidth,
             hardwareNotchExclusionWidth: closedContentNotchExclusionWidth
         )
+        return max(160, baseWidth + model.closedWidthAdjustment)
     }
 
     private var transitionPlan: IslandTransitionPlan? {
@@ -316,6 +317,7 @@ struct IslandShellView: View {
                 closedHeight,
                 model.selectedModuleContentHeight
                     + expandedContentTopClearance
+                    + model.expandedHeightAdjustment
                     + CodexIslandChromeMetrics.openedSurfaceBottomInset
             )
         )
@@ -848,8 +850,7 @@ private struct IslandShellBackplateSurface: View, Equatable {
         ZStack(alignment: .top) {
             materialLayer
 
-            shape
-                .fill(backplateGradient)
+            backplateLayer
         }
         .frame(width: width, height: height)
         .clipShape(shape)
@@ -866,13 +867,30 @@ private struct IslandShellBackplateSurface: View, Equatable {
         }
     }
 
+    @ViewBuilder
     private var materialLayer: some View {
-        Color.clear
-            .frame(width: materialWidth, height: materialHeight)
-            .islandShellLiquidGlass(in: materialShape)
-            .transaction { transaction in
-                transaction.animation = nil
-            }
+        if isOpened {
+            Color.clear
+                .frame(width: materialWidth, height: materialHeight)
+                .islandShellLiquidGlass(in: materialShape)
+                .transaction { transaction in
+                    transaction.animation = nil
+                }
+        } else {
+            Color.black
+                .frame(width: materialWidth, height: materialHeight)
+        }
+    }
+
+    @ViewBuilder
+    private var backplateLayer: some View {
+        if isOpened {
+            shape
+                .fill(backplateGradient)
+        } else {
+            shape
+                .fill(Color.black)
+        }
     }
 
     private var backplateGradient: LinearGradient {

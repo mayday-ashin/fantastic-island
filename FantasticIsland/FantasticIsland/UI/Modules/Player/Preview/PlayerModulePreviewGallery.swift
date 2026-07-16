@@ -50,6 +50,7 @@ private struct PlayerPreviewPanel: View {
     }
 }
 
+#if DEBUG
 #Preview("Player Gallery") {
     ScrollView {
         VStack(alignment: .leading, spacing: 24) {
@@ -85,3 +86,4 @@ private struct PlayerPreviewPanel: View {
     .background(Color(red: 0.06, green: 0.06, blue: 0.08))
     .preferredColorScheme(.dark)
 }
+#endif

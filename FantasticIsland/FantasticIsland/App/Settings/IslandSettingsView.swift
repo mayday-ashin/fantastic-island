@@ -142,12 +142,12 @@ struct IslandSettingsView: View {
 
     private var detailPane: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            LazyVStack(alignment: .leading, spacing: 22) {
                 switch selection {
                 case .general:
                     generalPage
                 case .about:
-                    IslandAboutPage()
+                    IslandAboutPage().equatable()
                 case let .module(moduleID):
                     modulePage(moduleID: moduleID)
                 }
@@ -192,6 +192,61 @@ struct IslandSettingsView: View {
                         detail: "Opens Twitter and focuses the post box.",
                         shortcut: model.twitterShortcutDisplayText
                     )
+                }
+            }
+
+            SettingsCard(title: "Island Size") {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Drag each slider to tune the island independently. 0 keeps the original size; positive values add points and negative values remove points. Each step is 1 point.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    IslandDimensionAdjustmentRow(
+                        title: "Collapsed Width",
+                        detail: "Horizontal size before opening.",
+                        value: Binding(
+                            get: { model.closedWidthAdjustment },
+                            set: { model.setClosedWidthAdjustment(Double($0)) }
+                        )
+                    )
+
+                    IslandDimensionAdjustmentRow(
+                        title: "Collapsed Height",
+                        detail: "Vertical size before opening.",
+                        value: Binding(
+                            get: { model.closedHeightAdjustment },
+                            set: { model.setClosedHeightAdjustment(Double($0)) }
+                        )
+                    )
+
+                    IslandDimensionAdjustmentRow(
+                        title: "Expanded Width",
+                        detail: "Horizontal size after opening.",
+                        value: Binding(
+                            get: { model.expandedWidthAdjustment },
+                            set: { model.setExpandedWidthAdjustment(Double($0)) }
+                        )
+                    )
+
+                    IslandDimensionAdjustmentRow(
+                        title: "Expanded Height",
+                        detail: "Additional vertical room after opening.",
+                        value: Binding(
+                            get: { model.expandedHeightAdjustment },
+                            set: { model.setExpandedHeightAdjustment(Double($0)) }
+                        )
+                    )
+
+                    HStack {
+                        Spacer(minLength: 0)
+                        Button("Reset to Original") {
+                            model.resetIslandLayoutAdjustments()
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.orange.opacity(0.95))
+                    }
                 }
             }
 
@@ -1518,6 +1573,51 @@ private struct SettingsControlRow<Accessory: View>: View {
             accessory
                 .fixedSize()
         }
+    }
+}
+
+private struct IslandDimensionAdjustmentRow: View {
+    let title: String
+    let detail: String
+    @Binding var value: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(LocalizedStringKey(title))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+
+                    Text(LocalizedStringKey(detail))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.45))
+                }
+
+                Spacer(minLength: 0)
+
+                Text(formattedAdjustment(value))
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .frame(width: 58, alignment: .trailing)
+            }
+
+            Slider(
+                value: Binding(
+                    get: { Double(value) },
+                    set: { value = CGFloat($0) }
+                ),
+                in: -200 ... 200,
+                step: 1
+            )
+            .frame(maxWidth: .infinity)
+            .tint(.white.opacity(0.88))
+        }
+    }
+
+    private func formattedAdjustment(_ value: CGFloat) -> String {
+        let roundedValue = Int(value.rounded())
+        return roundedValue > 0 ? "+\(roundedValue) pt" : "\(roundedValue) pt"
     }
 }
 

@@ -23,6 +23,8 @@ struct CodexModuleRenderState {
     let globalInfoWeekValueText: String
     let globalInfoFiveHourResetCompactText: String
     let globalInfoWeekResetCompactText: String
+    let hasFiveHourQuota: Bool
+    let hasWeekQuota: Bool
     let tokenUsageHeatmap: CodexTokenHeatmapSnapshot
     let approvePermission: (String, CodexApprovalAction) -> Void
     let answerQuestion: (String, CodexQuestionResponse) -> Void
@@ -292,16 +294,20 @@ struct CodexModuleContentView: View {
                 Spacer(minLength: 0)
 
                 HStack(spacing: CodexExpandedMetrics.globalInfoBadgeSpacing) {
-                    quotaBadge(
-                        title: "5H",
-                        value: state.globalInfoFiveHourValueText,
-                        resetText: state.globalInfoFiveHourResetCompactText
-                    )
-                    quotaBadge(
-                        title: "W",
-                        value: state.globalInfoWeekValueText,
-                        resetText: state.globalInfoWeekResetCompactText
-                    )
+                    if state.hasFiveHourQuota {
+                        quotaBadge(
+                            title: "5H",
+                            value: state.globalInfoFiveHourValueText,
+                            resetText: state.globalInfoFiveHourResetCompactText
+                        )
+                    }
+                    if state.hasWeekQuota {
+                        quotaBadge(
+                            title: "W",
+                            value: state.globalInfoWeekValueText,
+                            resetText: state.globalInfoWeekResetCompactText
+                        )
+                    }
                     liveCountBadge
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -541,64 +547,69 @@ private struct CodexTokenHeatmapView: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text("Tokens")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.86))
-                    .lineLimit(1)
+        GeometryReader { geometry in
+            let visibleHeatmap = heatmap.fitting(
+                maxColumnCount: maxColumnCount(for: geometry.size.width)
+            )
 
-                Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("Tokens")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.86))
+                        .lineLimit(1)
 
-                Text(heatmap.periodText)
-                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.62))
-                    .lineLimit(1)
+                    Spacer(minLength: 0)
 
-                Text(heatmap.peakText)
-                    .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.42))
-                    .lineLimit(1)
+                    Text(visibleHeatmap.periodText)
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .lineLimit(1)
+
+                    Text(visibleHeatmap.peakText)
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.42))
+                        .lineLimit(1)
+                }
+
+                heatmapGrid(visibleHeatmap, width: geometry.size.width)
             }
-
-            heatmapGrid
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(height: gridHeight + 24)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Codex token usage heatmap")
     }
 
-    private var heatmapGrid: some View {
-        GeometryReader { geometry in
-            let layout = CodexTokenHeatmapGridLayout(
-                width: geometry.size.width,
-                columnCount: heatmap.weekColumns.count,
-                rowCount: CodexTokenHeatmapSnapshot.rowCount,
-                minCellSize: minCellSize,
-                maxCellSize: maxCellSize,
-                preferredCellSpacing: preferredCellSpacing
-            )
+    private func heatmapGrid(_ heatmap: CodexTokenHeatmapSnapshot, width: CGFloat) -> some View {
+        let layout = CodexTokenHeatmapGridLayout(
+            width: width,
+            columnCount: heatmap.weekColumns.count,
+            rowCount: CodexTokenHeatmapSnapshot.rowCount,
+            minCellSize: minCellSize,
+            maxCellSize: maxCellSize,
+            preferredCellSpacing: preferredCellSpacing
+        )
 
-            ZStack(alignment: .topLeading) {
-                Canvas { context, _ in
-                    drawHeatmap(in: &context, layout: layout)
-                }
-                .frame(maxWidth: .infinity, minHeight: layout.height, maxHeight: layout.height, alignment: .leading)
-
-                if let hoverState {
-                    CodexTokenHeatmapTooltip(
-                        dateText: hoverState.day.date.formatted(.dateTime.month().day().year()),
-                        tokenText: exactTokenText(hoverState.day.totalTokens)
-                    )
-                    .position(tooltipPosition(for: hoverState, in: geometry.size.width))
-                    .allowsHitTesting(false)
-                }
+        return ZStack(alignment: .topLeading) {
+            Canvas { context, _ in
+                drawHeatmap(in: &context, layout: layout, heatmap: heatmap)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .onContinuousHover { phase in
-                handleHover(phase, layout: layout)
+            .frame(maxWidth: .infinity, minHeight: layout.height, maxHeight: layout.height, alignment: .leading)
+
+            if let hoverState {
+                CodexTokenHeatmapTooltip(
+                    dateText: hoverState.day.date.formatted(.dateTime.month().day().year()),
+                    tokenText: exactTokenText(hoverState.day.totalTokens)
+                )
+                .position(tooltipPosition(for: hoverState, in: width))
+                .allowsHitTesting(false)
             }
         }
-        .frame(height: gridHeight)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onContinuousHover { phase in
+            handleHover(phase, layout: layout, heatmap: heatmap)
+        }
     }
 
     private var gridHeight: CGFloat {
@@ -606,7 +617,18 @@ private struct CodexTokenHeatmapView: View, Equatable {
             + (preferredCellSpacing * CGFloat(CodexTokenHeatmapSnapshot.rowCount - 1))
     }
 
-    private func drawHeatmap(in context: inout GraphicsContext, layout: CodexTokenHeatmapGridLayout) {
+    private func maxColumnCount(for width: CGFloat) -> Int {
+        max(
+            1,
+            Int(floor((max(width, 0) + preferredCellSpacing) / (minCellSize + preferredCellSpacing)))
+        )
+    }
+
+    private func drawHeatmap(
+        in context: inout GraphicsContext,
+        layout: CodexTokenHeatmapGridLayout,
+        heatmap: CodexTokenHeatmapSnapshot
+    ) {
         let hoveredDayID = hoverState?.day.id
 
         for (columnIndex, week) in heatmap.weekColumns.enumerated() {
@@ -615,7 +637,10 @@ private struct CodexTokenHeatmapView: View, Equatable {
                 let rect = layout.cellRect(column: columnIndex, row: row)
                 let path = Path(roundedRect: rect, cornerRadius: layout.cornerRadius, style: .continuous)
 
-                context.fill(path, with: .color(fillColor(for: day?.totalTokens ?? 0)))
+                context.fill(
+                    path,
+                    with: .color(fillColor(for: day?.totalTokens ?? 0, maxTokenCount: heatmap.maxTokenCount))
+                )
 
                 guard let day else {
                     continue
@@ -631,16 +656,24 @@ private struct CodexTokenHeatmapView: View, Equatable {
         }
     }
 
-    private func handleHover(_ phase: HoverPhase, layout: CodexTokenHeatmapGridLayout) {
+    private func handleHover(
+        _ phase: HoverPhase,
+        layout: CodexTokenHeatmapGridLayout,
+        heatmap: CodexTokenHeatmapSnapshot
+    ) {
         switch phase {
         case let .active(location):
-            updateHoverState(at: location, layout: layout)
+            updateHoverState(at: location, layout: layout, heatmap: heatmap)
         case .ended:
             clearHoverState()
         }
     }
 
-    private func updateHoverState(at location: CGPoint, layout: CodexTokenHeatmapGridLayout) {
+    private func updateHoverState(
+        at location: CGPoint,
+        layout: CodexTokenHeatmapGridLayout,
+        heatmap: CodexTokenHeatmapSnapshot
+    ) {
         guard let index = layout.cellIndex(at: location),
               index.column < heatmap.weekColumns.count else {
             clearHoverState()
@@ -683,12 +716,12 @@ private struct CodexTokenHeatmapView: View, Equatable {
         return CGPoint(x: x, y: y)
     }
 
-    private func fillColor(for tokens: Int) -> Color {
+    private func fillColor(for tokens: Int, maxTokenCount: Int) -> Color {
         guard tokens > 0 else {
             return Color.white.opacity(0.055)
         }
 
-        let ratio = Double(tokens) / Double(heatmap.maxTokenCount)
+        let ratio = Double(tokens) / Double(maxTokenCount)
         switch ratio {
         case ..<0.20:
             return Color.white.opacity(0.18)

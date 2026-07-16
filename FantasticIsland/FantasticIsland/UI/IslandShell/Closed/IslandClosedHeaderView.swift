@@ -18,6 +18,7 @@ struct IslandClosedHeaderView: View {
                     }
                     .padding(.horizontal, CodexIslandChromeMetrics.closedHorizontalPadding)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .offset(x: CodexIslandChromeMetrics.closedHardwareNotchFanHorizontalOffset)
 
                     Color.clear
                         .frame(width: notchExclusionWidth)

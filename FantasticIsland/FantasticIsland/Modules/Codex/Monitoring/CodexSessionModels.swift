@@ -781,9 +781,33 @@ struct CodexQuotaSnapshot: Equatable {
         }
 
         let sourceKind = preferredSourceKind(for: rateLimits["limit_id"])
-        let fiveHour = parseWindow(rateLimits["primary"] as? [String: Any])
-        let week = parseWindow(rateLimits["secondary"] as? [String: Any])
-        guard fiveHour.remainingPercent != nil || week.remainingPercent != nil else {
+        let primary = parseWindow(rateLimits["primary"] as? [String: Any])
+        let secondary = parseWindow(rateLimits["secondary"] as? [String: Any])
+        let hasPrimary = primary.remainingPercent != nil || primary.resetAt != nil
+        let hasSecondary = secondary.remainingPercent != nil || secondary.resetAt != nil
+
+        let fiveHour: (remainingPercent: Int?, resetAt: Date?)
+        let week: (remainingPercent: Int?, resetAt: Date?)
+        if hasSecondary {
+            // When both windows are present, Codex uses primary for the
+            // short window and secondary for the weekly window.
+            fiveHour = primary
+            week = secondary
+        } else if hasPrimary, isWeeklyWindow(resetAt: primary.resetAt, capturedAt: timestamp) {
+            // Some Codex versions temporarily expose only one window. A
+            // reset farther than a day away is the weekly window, even when
+            // the server still calls it `primary`.
+            fiveHour = (nil, nil)
+            week = primary
+        } else {
+            fiveHour = primary
+            week = (nil, nil)
+        }
+
+        guard fiveHour.remainingPercent != nil
+                || fiveHour.resetAt != nil
+                || week.remainingPercent != nil
+                || week.resetAt != nil else {
             return nil
         }
 
@@ -855,6 +879,14 @@ struct CodexQuotaSnapshot: Equatable {
             ?? parseFlexibleDate(dictionary["reset_at_ms"])
 
         return (remainingPercent, resetAt)
+    }
+
+    private static func isWeeklyWindow(resetAt: Date?, capturedAt: Date) -> Bool {
+        guard let resetAt else {
+            return false
+        }
+
+        return resetAt.timeIntervalSince(capturedAt) > 12 * 60 * 60
     }
 
     private static func boundedPercentage(_ value: Int?) -> Int? {
@@ -933,12 +965,14 @@ struct CodexTokenUsageDay: Identifiable, Equatable {
 struct CodexTokenHeatmapSnapshot: Equatable {
     static let rowCount = 7
 
+    var days: [CodexTokenUsageDay]
     var weekColumns: [[CodexTokenUsageDay?]]
     var periodText: String
     var peakText: String
     var maxTokenCount: Int
 
     static let empty = CodexTokenHeatmapSnapshot(
+        days: [],
         weekColumns: [],
         periodText: "365D 0",
         peakText: "PEAK --",
@@ -953,11 +987,51 @@ struct CodexTokenHeatmapSnapshot: Equatable {
     ) -> CodexTokenHeatmapSnapshot {
         let peak = days.map(\.totalTokens).max() ?? 0
         return CodexTokenHeatmapSnapshot(
+            days: days,
             weekColumns: weekColumns(for: days, calendar: calendar),
             periodText: periodText,
             peakText: peakText,
             maxTokenCount: max(peak, 1)
         )
+    }
+
+    func fitting(maxColumnCount: Int, calendar: Calendar = .autoupdatingCurrent) -> CodexTokenHeatmapSnapshot {
+        guard maxColumnCount > 0,
+              !days.isEmpty,
+              weekColumns.count > maxColumnCount else {
+            return self
+        }
+
+        var dayCount = min(days.count, maxColumnCount * Self.rowCount)
+        while dayCount > 0 {
+            let visibleDays = Array(days.suffix(dayCount))
+            let peak = visibleDays.map(\.totalTokens).max() ?? 0
+            let candidate = Self.make(
+                days: visibleDays,
+                periodText: "\(visibleDays.count)D \(Self.tokenCountText(visibleDays.reduce(0) { $0 + $1.totalTokens }))",
+                peakText: peak > 0 ? "PEAK \(Self.tokenCountText(peak))" : "PEAK --",
+                calendar: calendar
+            )
+
+            if candidate.weekColumns.count <= maxColumnCount {
+                return candidate
+            }
+
+            dayCount -= 1
+        }
+
+        return self
+    }
+
+    private static func tokenCountText(_ value: Int) -> String {
+        switch value {
+        case 1_000_000...:
+            return String(format: "%.1fM", Double(value) / 1_000_000)
+        case 1_000...:
+            return String(format: "%.1fK", Double(value) / 1_000)
+        default:
+            return "\(value)"
+        }
     }
 
     private static func weekColumns(

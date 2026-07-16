@@ -179,6 +179,12 @@ final class CodexModuleModel: ObservableObject, IslandModule {
     var globalInfoFiveHourResetCompactText: String { quotaResetTimeCompactText(quotaSnapshot?.fiveHourResetAt) }
     var globalInfoWeekResetCompactText: String { quotaResetCompactText(quotaSnapshot?.weekResetAt) }
     var tokenUsageHeatmap: CodexTokenHeatmapSnapshot { tokenUsageHeatmapSnapshot }
+    var hasFiveHourQuota: Bool {
+        quotaSnapshot?.fiveHourRemainingPercent != nil || quotaSnapshot?.fiveHourResetAt != nil
+    }
+    var hasWeekQuota: Bool {
+        quotaSnapshot?.weekRemainingPercent != nil || quotaSnapshot?.weekResetAt != nil
+    }
     var expandedFiveHourQuotaText: String { expandedQuotaText(title: "5H Left", value: quotaSnapshot?.fiveHourRemainingPercent) }
     var expandedWeekQuotaText: String { expandedQuotaText(title: "Week Left", value: quotaSnapshot?.weekRemainingPercent) }
     var fiveHourResetDescriptionText: String { quotaResetText(quotaSnapshot?.fiveHourResetAt) }
@@ -206,29 +212,37 @@ final class CodexModuleModel: ObservableObject, IslandModule {
     }
 
     var collapsedSummaryItems: [CollapsedSummaryItem] {
-        [
-            CollapsedSummaryItem(
+        var items: [CollapsedSummaryItem] = []
+
+        if hasFiveHourQuota {
+            items.append(CollapsedSummaryItem(
                 id: "\(id).summary.5h",
                 moduleID: id,
                 title: "5H quota",
                 text: compactFiveHourQuotaText,
                 isEnabledByDefault: true
-            ),
-            CollapsedSummaryItem(
+            ))
+        }
+
+        if hasWeekQuota {
+            items.append(CollapsedSummaryItem(
                 id: "\(id).summary.week",
                 moduleID: id,
                 title: "Week quota",
                 text: compactWeekQuotaText,
                 isEnabledByDefault: true
-            ),
-            CollapsedSummaryItem(
+            ))
+        }
+
+        items.append(CollapsedSummaryItem(
                 id: "\(id).summary.live",
                 moduleID: id,
                 title: "Live sessions",
                 text: compactLiveSessionsText,
                 isEnabledByDefault: true
-            ),
-        ]
+        ))
+
+        return items
     }
 
     var taskActivityContribution: TaskActivityContribution {
@@ -407,6 +421,8 @@ final class CodexModuleModel: ObservableObject, IslandModule {
             globalInfoWeekValueText: globalInfoWeekValueText,
             globalInfoFiveHourResetCompactText: globalInfoFiveHourResetCompactText,
             globalInfoWeekResetCompactText: globalInfoWeekResetCompactText,
+            hasFiveHourQuota: hasFiveHourQuota,
+            hasWeekQuota: hasWeekQuota,
             tokenUsageHeatmap: tokenUsageHeatmap,
             approvePermission: { [weak self] sessionID, action in
                 Task { @MainActor in

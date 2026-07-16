@@ -242,10 +242,10 @@ private final class RotatingImageContainerView: NSView {
             return
         }
 
-        // `rotationDegrees` is the shared clockwise-on-screen semantic.
-        // Core Animation's z-rotation renders with the opposite sign here,
-        // so the layer renderer converts that semantic locally.
-        let currentRadians = -(animationState.rotationDegrees() * .pi / 180)
+        // Keep the angle that is actually visible on screen when changing
+        // speed. Recomputing from the model anchor and restarting from there
+        // can jump by a few frames while the CPU-load sample is applied.
+        let currentRadians = currentDisplayedRadians(for: animationState)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -261,11 +261,27 @@ private final class RotatingImageContainerView: NSView {
             animation.repeatCount = .infinity
             animation.isRemovedOnCompletion = false
             animation.fillMode = .forwards
+            animation.timingFunction = CAMediaTimingFunction(name: .linear)
             rotationLayer.add(animation, forKey: Self.rotationAnimationKey)
         }
         CATransaction.commit()
 
         lastAnimationState = animationState
+    }
+
+    private func currentDisplayedRadians(for animationState: IslandFanAnimationState) -> Double {
+        if animationState.isSpinning,
+           let presentationTransform = rotationLayer.presentation()?.transform {
+            // The z-rotation angle is encoded by m11/m12. This reads the
+            // presentation layer, rather than the model layer, so a speed
+            // change starts from the exact angle the user currently sees.
+            return atan2(Double(presentationTransform.m12), Double(presentationTransform.m11))
+        }
+
+        // `rotationDegrees` is the shared clockwise-on-screen semantic.
+        // Core Animation's z-rotation renders with the opposite sign here,
+        // so the layer renderer converts that semantic locally.
+        return -(animationState.rotationDegrees() * .pi / 180)
     }
 
     private static let rotationAnimationKey = "fantastic-island.rotation"

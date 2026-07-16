@@ -1,8 +1,12 @@
 import AppKit
 import SwiftUI
 
-struct IslandAboutPage: View {
+struct IslandAboutPage: View, Equatable {
     @Environment(\.openURL) private var openURL
+
+    static func == (lhs: IslandAboutPage, rhs: IslandAboutPage) -> Bool {
+        true
+    }
 
     private let thirdPartyProjects: [IslandThirdPartyProject] = [
         IslandThirdPartyProject(

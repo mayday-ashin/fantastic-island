@@ -26,6 +26,7 @@ private struct PreviewShellSurface<Content: View>: View {
     }
 }
 
+#if DEBUG
 #Preview("Shell Gallery") {
     ScrollView {
         VStack(alignment: .leading, spacing: 28) {
@@ -78,3 +79,4 @@ private struct PreviewShellSurface<Content: View>: View {
     .frame(width: 980, height: 1200)
     .preferredColorScheme(.dark)
 }
+#endif

@@ -31,6 +31,8 @@ enum CodexIslandChromeMetrics {
     static let defaultOpenedSurfaceContentHorizontalInset: CGFloat = 22
     static let defaultClosedHoverScale: CGFloat = 1.028
     static let defaultClosedHorizontalPadding: CGFloat = 20
+    // Positive values move the compact fan toward the hardware notch.
+    static let defaultClosedHardwareNotchFanHorizontalOffset: CGFloat = 40
     static let defaultClosedFanModuleSpacing: CGFloat = 16
     static let defaultClosedModuleSpacing: CGFloat = 8
     static let defaultClosedModuleContentSpacing: CGFloat = 8
@@ -63,6 +65,9 @@ enum CodexIslandChromeMetrics {
     static var openedSurfaceContentHorizontalInset: CGFloat { CGFloat(IslandDesignTokenRuntime.current.shell.openedSurfaceContentHorizontalInset) }
     static var closedHoverScale: CGFloat { CGFloat(IslandDesignTokenRuntime.current.shell.closedHoverScale) }
     static var closedHorizontalPadding: CGFloat { CGFloat(IslandDesignTokenRuntime.current.shell.closedHorizontalPadding) }
+    static var closedHardwareNotchFanHorizontalOffset: CGFloat {
+        defaultClosedHardwareNotchFanHorizontalOffset
+    }
     static var closedFanModuleSpacing: CGFloat { CGFloat(IslandDesignTokenRuntime.current.shell.closedFanModuleSpacing) }
     static var closedModuleSpacing: CGFloat { CGFloat(IslandDesignTokenRuntime.current.shell.closedModuleSpacing) }
     static var closedModuleContentSpacing: CGFloat { CGFloat(IslandDesignTokenRuntime.current.shell.closedModuleContentSpacing) }
