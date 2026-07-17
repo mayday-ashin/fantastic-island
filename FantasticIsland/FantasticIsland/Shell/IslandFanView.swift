@@ -5,6 +5,7 @@ private let compactIslandFanIconSize: CGFloat = 20
 
 struct IslandFanIconView: View, Equatable {
     let animationState: IslandFanAnimationState
+    var tintColor: NSColor = .white
 
     var body: some View {
         Group {
@@ -12,7 +13,7 @@ struct IslandFanIconView: View, Equatable {
                 RotatingImageView(
                     image: compactFanSymbol,
                     size: CGSize(width: compactIslandFanIconSize, height: compactIslandFanIconSize),
-                    tintColor: .white,
+                    tintColor: tintColor,
                     animationState: animationState
                 )
             } else {
@@ -25,7 +26,7 @@ struct IslandFanIconView: View, Equatable {
     private func compactFallbackSymbol(rotationDegrees: Double) -> some View {
         Image(systemName: "fanblades.fill")
             .font(.system(size: compactIslandFanIconSize, weight: .semibold))
-            .foregroundStyle(.white)
+            .foregroundStyle(Color(nsColor: tintColor))
             .rotationEffect(.degrees(rotationDegrees))
             .transaction { transaction in
                 transaction.animation = nil

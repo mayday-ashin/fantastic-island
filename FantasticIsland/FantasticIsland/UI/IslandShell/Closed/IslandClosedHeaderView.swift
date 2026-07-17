@@ -14,7 +14,10 @@ struct IslandClosedHeaderView: View {
             if notchExclusionWidth > 0 {
                 HStack(spacing: 0) {
                     HStack(spacing: 0) {
-                        IslandFanIconView(animationState: state.fanAnimationState)
+                        IslandFanIconView(
+                            animationState: state.fanAnimationState,
+                            tintColor: state.fanTintColor
+                        )
                     }
                     .padding(.horizontal, CodexIslandChromeMetrics.closedHorizontalPadding)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -29,7 +32,10 @@ struct IslandClosedHeaderView: View {
                 }
             } else {
                 HStack(spacing: 0) {
-                    IslandFanIconView(animationState: state.fanAnimationState)
+                    IslandFanIconView(
+                        animationState: state.fanAnimationState,
+                        tintColor: state.fanTintColor
+                    )
 
                     Spacer(minLength: CodexIslandChromeMetrics.closedFanModuleSpacing)
 

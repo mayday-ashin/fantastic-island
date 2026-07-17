@@ -3,6 +3,7 @@ import SwiftUI
 
 struct IslandShellClosedHeaderRenderState {
     let fanAnimationState: IslandFanAnimationState
+    let fanTintColor: NSColor
     let compactModules: [CompactModuleSummary]
 }
 

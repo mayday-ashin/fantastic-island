@@ -721,19 +721,15 @@ private struct CodexTokenHeatmapView: View, Equatable {
             return Color.white.opacity(0.055)
         }
 
-        let ratio = Double(tokens) / Double(maxTokenCount)
-        switch ratio {
-        case ..<0.20:
-            return Color.white.opacity(0.18)
-        case ..<0.40:
-            return Color.white.opacity(0.32)
-        case ..<0.65:
-            return Color.white.opacity(0.50)
-        case ..<0.85:
-            return Color.white.opacity(0.68)
-        default:
-            return Color.white.opacity(0.9)
-        }
+        // Use a continuous green scale instead of white steps.  A square
+        // with more tokens is both brighter and more saturated, while low
+        // usage remains visible against the dark island surface.
+        let ratio = min(max(Double(tokens) / Double(max(maxTokenCount, 1)), 0), 1)
+        let intensity = pow(ratio, 0.65)
+        let red = 0.04 + (0.16 * (1 - intensity))
+        let green = 0.18 + (0.72 * intensity)
+        let blue = 0.06 + (0.16 * (1 - intensity))
+        return Color(red: red, green: green, blue: blue)
     }
 
     private func exactTokenText(_ value: Int) -> String {

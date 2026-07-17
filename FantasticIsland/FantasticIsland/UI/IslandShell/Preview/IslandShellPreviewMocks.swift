@@ -9,6 +9,7 @@ enum IslandShellPreviewMocks {
             rotationPeriod: 1.6,
             isSpinning: false
         ),
+        fanTintColor: .white,
         compactModules: [
             CompactModuleSummary(
                 moduleID: "codex",

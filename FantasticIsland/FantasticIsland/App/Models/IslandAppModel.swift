@@ -174,8 +174,8 @@ final class IslandAppModel: ObservableObject {
         self.windDriveLogoPreset = WindDriveLogoPreset(
             rawValue: defaults.string(forKey: IslandDefaults.windDriveLogoPresetKey) ?? ""
         ) ?? .defaultMark
-        self.usesCustomWindDriveLogo = defaults.bool(forKey: IslandDefaults.windDriveUsesCustomLogoKey)
         self.windDriveCustomLogoPath = defaults.string(forKey: IslandDefaults.windDriveCustomLogoPathKey) ?? ""
+        self.usesCustomWindDriveLogo = defaults.bool(forKey: IslandDefaults.windDriveUsesCustomLogoKey)
         self.enabledModuleIDs = loadedEnabledModuleIDs
         self.closedWidthAdjustment = Self.loadLayoutAdjustment(
             defaults.double(forKey: IslandDefaults.closedWidthAdjustmentKey)
@@ -193,6 +193,13 @@ final class IslandAppModel: ObservableObject {
             ? codexFanModule.id
             : loadedEnabledModuleIDs.first ?? codexFanModule.id
         self.windDriveCustomLogoImage = Self.loadImage(at: windDriveCustomLogoPath)
+        if usesCustomWindDriveLogo && windDriveCustomLogoImage == nil {
+            // Do not keep the UI in a custom-logo state when the source file
+            // was removed or moved. The selected preset remains available.
+            self.usesCustomWindDriveLogo = false
+            defaults.set(false, forKey: IslandDefaults.windDriveUsesCustomLogoKey)
+            defaults.synchronize()
+        }
         syncFanModulePresentation()
         normalizeSelectedModuleID()
         refreshLaunchAtLoginState()
@@ -355,6 +362,23 @@ final class IslandAppModel: ObservableObject {
             anchorDegrees: spinAnchorDegrees,
             rotationPeriod: activityState.rotationPeriod,
             isSpinning: activityState.isSpinning
+        )
+    }
+
+    /// The small collapsed fan follows the most relevant Codex quota.  A
+    /// missing 5-hour window means the weekly window is the active fallback.
+    var collapsedFanTintColor: NSColor {
+        let remaining = codexFanModule.quotaSnapshot?.fiveHourRemainingPercent
+            ?? codexFanModule.quotaSnapshot?.weekRemainingPercent
+        guard let remaining, remaining < 30 else {
+            return .white
+        }
+
+        return NSColor(
+            calibratedRed: 1.0,
+            green: 0.8,
+            blue: 0.0,
+            alpha: 1.0
         )
     }
     var audioToggleSymbolName: String {
@@ -791,6 +815,7 @@ final class IslandAppModel: ObservableObject {
         let defaults = UserDefaults.standard
         defaults.set(preset.rawValue, forKey: IslandDefaults.windDriveLogoPresetKey)
         defaults.set(false, forKey: IslandDefaults.windDriveUsesCustomLogoKey)
+        defaults.synchronize()
     }
 
     func selectCustomWindDriveLogo() {
@@ -815,12 +840,15 @@ final class IslandAppModel: ObservableObject {
         let defaults = UserDefaults.standard
         defaults.set(path, forKey: IslandDefaults.windDriveCustomLogoPathKey)
         defaults.set(usesCustomWindDriveLogo, forKey: IslandDefaults.windDriveUsesCustomLogoKey)
+        defaults.synchronize()
     }
 
     func clearCustomWindDriveLogo() {
         usesCustomWindDriveLogo = false
         syncFanModulePresentation()
-        UserDefaults.standard.set(false, forKey: IslandDefaults.windDriveUsesCustomLogoKey)
+        let defaults = UserDefaults.standard
+        defaults.set(false, forKey: IslandDefaults.windDriveUsesCustomLogoKey)
+        defaults.synchronize()
     }
 
     func isModuleEnabled(_ moduleID: String) -> Bool {
@@ -1887,7 +1915,18 @@ final class IslandAppModel: ObservableObject {
     ) {
         let normalizedValue = Self.loadLayoutAdjustment(value)
         setter(normalizedValue)
-        UserDefaults.standard.set(Double(normalizedValue), forKey: defaultsKey)
+        let storedValue = Double(normalizedValue)
+        // UserDefaults.standard is the app's existing configuration plist.
+        // Write there first so all settings share the same durable domain.
+        let standardDefaults = UserDefaults.standard
+        standardDefaults.set(storedValue, forKey: defaultsKey)
+        standardDefaults.synchronize()
+
+        // Keep the previous layout suite in sync for downgrade/rollback
+        // compatibility with builds that still read that suite.
+        let legacyLayoutDefaults = IslandDefaults.layoutSettingsDefaults
+        legacyLayoutDefaults.set(storedValue, forKey: defaultsKey)
+        legacyLayoutDefaults.synchronize()
         shellController.reposition(refreshRootView: true)
     }
 

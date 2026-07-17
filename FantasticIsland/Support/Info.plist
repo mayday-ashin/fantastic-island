@@ -6,8 +6,8 @@
 		<string>$(DEVELOPMENT_LANGUAGE)</string>
 		<key>CFBundleDisplayName</key>
 		<string>Fantastic Island</string>
-		<key>CFBundleIconName</key>
-		<string>AppIcon</string>
+		<key>CFBundleIconFile</key>
+		<string>FantasticIsland.icns</string>
 		<key>CFBundleURLTypes</key>
 		<array>
 			<dict>

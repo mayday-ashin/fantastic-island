@@ -15,6 +15,11 @@ enum IslandDefaults {
     static let expandedWidthAdjustmentKey = "island.settings.layout.expandedWidthAdjustment"
     static let expandedHeightAdjustmentKey = "island.settings.layout.expandedHeightAdjustment"
 
+    // Legacy layout suite retained only for migration and downgrade
+    // compatibility. New writes use UserDefaults.standard together with the
+    // rest of the application's settings.
+    static let layoutSettingsSuiteName = "io.github.fantasticisland.layout"
+
     private static let legacyAudioMutedKey = "audioMuted"
 
     static func migrateLegacyValues() {
@@ -24,6 +29,35 @@ enum IslandDefaults {
            defaults.object(forKey: legacyAudioMutedKey) != nil {
             defaults.set(defaults.bool(forKey: legacyAudioMutedKey), forKey: audioMutedKey)
         }
+
+        // Layout settings used to be written to a separate suite.  The rest
+        // of Fantastic Island uses the app's standard defaults domain, so
+        // copy the old values into that domain before the app reads them.
+        // Keep the reverse copy for older builds that may still be running.
+        migrateLayoutValues(from: layoutSettingsDefaults, to: defaults)
+        migrateLayoutValues(from: defaults, to: layoutSettingsDefaults)
+        defaults.synchronize()
+    }
+
+    static var layoutSettingsDefaults: UserDefaults {
+        UserDefaults(suiteName: layoutSettingsSuiteName) ?? UserDefaults.standard
+    }
+
+    static func migrateLayoutValues(from source: UserDefaults, to destination: UserDefaults) {
+        let keys = [
+            closedWidthAdjustmentKey,
+            closedHeightAdjustmentKey,
+            expandedWidthAdjustmentKey,
+            expandedHeightAdjustmentKey,
+        ]
+
+        for key in keys where destination.object(forKey: key) == nil {
+            if let value = source.object(forKey: key) {
+                destination.set(value, forKey: key)
+            }
+        }
+
+        destination.synchronize()
     }
 }
 
