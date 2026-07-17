@@ -2,6 +2,7 @@ import Foundation
 
 enum IslandDefaults {
     static let audioMutedKey = "island.audioMuted"
+    static let fanSoundEnabledKey = "island.settings.fan.soundEnabled"
     static let collapsedSummaryVisibleIDsKey = "island.collapsedSummary.visibleIDs"
     static let launchAtLoginKey = "island.settings.launchAtLogin"
     static let interfaceLanguageKey = "island.settings.interfaceLanguage"
@@ -28,6 +29,16 @@ enum IslandDefaults {
         if defaults.object(forKey: audioMutedKey) == nil,
            defaults.object(forKey: legacyAudioMutedKey) != nil {
             defaults.set(defaults.bool(forKey: legacyAudioMutedKey), forKey: audioMutedKey)
+        }
+
+        // Keep the Fan setting in a positively named, durable key while
+        // retaining compatibility with the older inverted audioMuted value.
+        if defaults.object(forKey: fanSoundEnabledKey) == nil {
+            if defaults.object(forKey: audioMutedKey) != nil {
+                defaults.set(!defaults.bool(forKey: audioMutedKey), forKey: fanSoundEnabledKey)
+            } else {
+                defaults.set(true, forKey: fanSoundEnabledKey)
+            }
         }
 
         // Layout settings used to be written to a separate suite.  The rest

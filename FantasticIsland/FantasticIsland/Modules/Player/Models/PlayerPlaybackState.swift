@@ -96,6 +96,8 @@ struct PlayerTrackMetadata: Equatable {
 
 struct PlayerNowPlayingState: Equatable {
     var source: PlayerSourceKind?
+    var applicationBundleIdentifier: String?
+    var applicationDisplayName: String?
     var playbackStatus: PlayerPlaybackStatus
     var track: PlayerTrackMetadata?
     var shuffleMode: PlayerShuffleMode
@@ -105,6 +107,8 @@ struct PlayerNowPlayingState: Equatable {
 
     static let empty = PlayerNowPlayingState(
         source: nil,
+        applicationBundleIdentifier: nil,
+        applicationDisplayName: nil,
         playbackStatus: .stopped,
         track: nil,
         shuffleMode: .unsupported,
@@ -116,6 +120,8 @@ struct PlayerNowPlayingState: Equatable {
     static func issueState(_ issue: PlayerAutomationIssue) -> PlayerNowPlayingState {
         PlayerNowPlayingState(
             source: nil,
+            applicationBundleIdentifier: nil,
+            applicationDisplayName: nil,
             playbackStatus: .stopped,
             track: nil,
             shuffleMode: .unsupported,
@@ -128,6 +134,8 @@ struct PlayerNowPlayingState: Equatable {
     static func idleState(source: PlayerSourceKind) -> PlayerNowPlayingState {
         PlayerNowPlayingState(
             source: source,
+            applicationBundleIdentifier: source == .system ? nil : source.bundleIdentifier,
+            applicationDisplayName: source == .system ? nil : source.displayName,
             playbackStatus: .stopped,
             track: nil,
             shuffleMode: .unsupported,
@@ -139,6 +147,8 @@ struct PlayerNowPlayingState: Equatable {
 
     static func == (lhs: PlayerNowPlayingState, rhs: PlayerNowPlayingState) -> Bool {
         lhs.source == rhs.source
+            && lhs.applicationBundleIdentifier == rhs.applicationBundleIdentifier
+            && lhs.applicationDisplayName == rhs.applicationDisplayName
             && lhs.playbackStatus == rhs.playbackStatus
             && lhs.track == rhs.track
             && lhs.shuffleMode == rhs.shuffleMode
@@ -148,7 +158,7 @@ struct PlayerNowPlayingState: Equatable {
     }
 
     var sourceLabel: String {
-        source?.displayName ?? "Player"
+        applicationDisplayName ?? source?.displayName ?? "Player"
     }
 
     var automationIssueSource: PlayerSourceKind? {

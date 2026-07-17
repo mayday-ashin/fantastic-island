@@ -65,6 +65,7 @@ struct IslandShellView: View {
 
     @State private var isHovering = false
     @State private var moduleScrollOffsets: [String: CGFloat] = [:]
+    @ObservedObject private var systemVolumeController = IslandSystemVolumeController.shared
 
     private var usesOpenedVisualState: Bool {
         visualMode != .closed
@@ -76,6 +77,10 @@ struct IslandShellView: View {
 
     private var usesExpandedLayoutBounds: Bool {
         usesOpenedVisualState || model.islandLayoutTransitionInFlight
+    }
+
+    private var showsSystemVolumeHUDContent: Bool {
+        systemVolumeController.shouldShowOverlayContent
     }
 
     private var closedContentWidth: CGFloat {
@@ -299,6 +304,11 @@ struct IslandShellView: View {
         let openSurfaceHorizontalInset = CodexIslandChromeMetrics.openedSurfaceContentHorizontalInset
 
         let closedTotalWidth = closedContentWidth
+            + (visualMode == .closed
+                ? (IslandSystemVolumeController.closedOverlayWidth
+                    + IslandSystemVolumeController.closedOverlayTrailingInset)
+                    * systemVolumeController.overlayExpansionProgress
+                : 0)
         let resolvedExpandedContentWidth = CodexIslandChromeMetrics.resolvedExpandedContentWidth(
             baseContentWidth: expandedContentWidth,
             showsWindDrivePanel: false
@@ -404,13 +414,38 @@ struct IslandShellView: View {
                     materialHeight: materialSurfaceMetrics.height,
                     isOpened: usesOpenedVisualState
                 )
-                .equatable()
 
-                ZStack(alignment: .top) {
-                    headerRow
-                        .frame(width: closedTotalWidth, alignment: .center)
-                        .frame(height: closedHeight)
-                        .frame(maxWidth: .infinity, alignment: .top)
+                ZStack(alignment: .topLeading) {
+                    // Keep the collapsed header and the inline volume HUD in
+                    // the same horizontal layout. This mirrors boring.notch's
+                    // InlineHUD approach: the shell width and the HUD opacity
+                    // are animated by one composited surface instead of two
+                    // independently moving sibling layers.
+                    HStack(spacing: 0) {
+                        headerRow
+                            .frame(width: closedContentWidth, alignment: .center)
+                            .frame(height: closedHeight)
+
+                        if visualMode == .closed && showsSystemVolumeHUDContent {
+                            IslandSystemVolumeHUD(
+                                controller: systemVolumeController,
+                                isExpanded: false
+                            )
+                            .frame(
+                                width: IslandSystemVolumeController.closedOverlayWidth,
+                                height: closedHeight,
+                                alignment: .center
+                            )
+                            .padding(.trailing, IslandSystemVolumeController.closedOverlayTrailingInset)
+                            .transition(.opacity)
+                            .allowsHitTesting(false)
+                        }
+                    }
+                    .frame(
+                        width: visualMode == .closed ? closedTotalWidth : surfaceWidth,
+                        height: surfaceHeight,
+                        alignment: .leading
+                    )
 
                     peekContentLayer
                         .frame(width: openBodyWidth, height: surfaceHeight, alignment: .top)
@@ -426,7 +461,10 @@ struct IslandShellView: View {
                 }
                 .overlay {
                     surfaceShape
-                        .strokeBorder(Color.white.opacity(usesOpenedVisualState ? 0.07 : 0.04), lineWidth: 1)
+                        .strokeBorder(
+                            Color.white.opacity(usesOpenedVisualState ? 0.07 : 0.04),
+                            lineWidth: 1
+                        )
                 }
 
                 if showsExpandedChrome {
@@ -437,7 +475,13 @@ struct IslandShellView: View {
                                 .frame(width: surfaceWidth, height: surfaceHeight)
                         }
                 }
+
             }
+            // Keep the backplate, shell content, and HUD in one clipped
+            // compositing surface. The HUD must not outlive the shell's
+            // trailing boundary during the same width transition.
+            .clipShape(surfaceShape)
+            .compositingGroup()
             .frame(width: stableLayerWidth, height: surfaceHeight, alignment: .top)
         }
         .scaleEffect(usesOpenedVisualState ? 1 : (isClosedHovering ? CodexIslandChromeMetrics.closedHoverScale : 1), anchor: .top)
@@ -446,6 +490,22 @@ struct IslandShellView: View {
         .animation(.spring(response: 0.38, dampingFraction: 0.8), value: isClosedHovering)
         .overlay(alignment: .topLeading) {
             collapsedModulePremeasurementView(width: premeasuredModuleColumnWidth)
+        }
+        .overlay(alignment: .topTrailing) {
+            if showsSystemVolumeHUDContent && model.islandExpanded {
+                IslandSystemVolumeHUD(
+                    controller: systemVolumeController,
+                    isExpanded: true
+                )
+                // 控制上下位置：
+                // 数值变大：音量条向下
+                // 数值变小：音量条向上
+                .padding(.top, 8)
+                // 控制左右位置：
+                // 数值变大：向左移动
+                // 数值变小：向右移动
+                .padding(.trailing, 50)
+            }
         }
         .onPreferenceChange(PremeasuredModuleContentHeightKey.self) { height in
             let selectedModule = model.selectedModule

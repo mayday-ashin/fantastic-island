@@ -13,7 +13,7 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
     private static let estimatedProgressSectionHeight: CGFloat = 30
     private static let estimatedOuterSpacing: CGFloat = 18
 
-    private struct TrackIdentity: Equatable {
+    private struct TrackIdentity: Hashable {
         let source: PlayerSourceKind
         let title: String
         let artist: String
@@ -69,6 +69,11 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
     private var artworkLoadIdentity: TrackIdentity?
     private var artworkPrefetchTask: Task<Void, Never>?
     private var artworkPrefetchIdentity: TrackIdentity?
+    // The track-switch activity and the standard Player view can be rendered
+    // by different live hosts. Keep the most recent decoded artwork available
+    // to both hosts, just like the persistent artwork state in boring.notch.
+    private var recentArtworkCache: [TrackIdentity: NSImage] = [:]
+    private var recentArtworkCacheOrder: [TrackIdentity] = []
     private var isRefreshing = false
     private var needsRefreshAfterCurrentPass = false
     private var pendingRefreshWorkItem: DispatchWorkItem?
@@ -228,6 +233,13 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
             resolvedNotification = nil
         }
 
+        var resolvedNowPlayingState = nowPlayingState
+        if resolvedNowPlayingState.artworkImage == nil,
+           let identity = TrackIdentity(state: resolvedNowPlayingState),
+           let cachedArtwork = recentArtworkCache[identity] {
+            resolvedNowPlayingState.artworkImage = cachedArtwork
+        }
+
         let sourceIconImages = Dictionary(
             uniqueKeysWithValues: defaultSourceOptions.compactMap { sourceKind -> (PlayerSourceKind, NSImage)? in
                 guard let image = PlayerSourceRegistry.appIcon(for: sourceKind) else {
@@ -238,17 +250,36 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
             }
         )
 
+        let selectedPlaybackSource = resolvedNowPlayingState.source ?? defaultSourceSelection
+        var resolvedSourceOptions = defaultSourceOptions
+        if let activeSource = resolvedNowPlayingState.source,
+           !resolvedSourceOptions.contains(activeSource) {
+            resolvedSourceOptions.append(activeSource)
+        }
+
+        var resolvedSourceIconImages = sourceIconImages
+        if let bundleIdentifier = resolvedNowPlayingState.applicationBundleIdentifier,
+           !bundleIdentifier.isEmpty,
+           let applicationURL = NSWorkspace.shared.urlForApplication(
+               withBundleIdentifier: bundleIdentifier
+        ) {
+            let applicationIcon = NSWorkspace.shared.icon(forFile: applicationURL.path)
+            applicationIcon.size = NSSize(width: 64, height: 64)
+            resolvedSourceIconImages[selectedPlaybackSource] = applicationIcon
+        }
+
         return PlayerModuleRenderState(
             presentation: presentation,
-            nowPlayingState: nowPlayingState,
+            nowPlayingState: resolvedNowPlayingState,
             trackSwitchNotification: resolvedNotification,
             supportsTransportControls: supportsTransportControls,
             automationIssue: automationIssue,
             canRequestAutomationAccess: canRequestAutomationAccess,
             isResolvingAutomationAccess: isResolvingAutomationAccess,
-            sourceOptions: defaultSourceOptions,
-            selectedSource: defaultSourceSelection,
-            sourceIconImages: sourceIconImages,
+            sourceOptions: resolvedSourceOptions,
+            selectedSource: selectedPlaybackSource,
+            sourceIconImages: resolvedSourceIconImages,
+            activeApplicationName: nowPlayingState.applicationDisplayName,
             previousTrack: { [weak self] in Task { @MainActor in self?.previousTrack() } },
             togglePlayPause: { [weak self] in Task { @MainActor in self?.togglePlayPause() } },
             nextTrack: { [weak self] in Task { @MainActor in self?.nextTrack() } },
@@ -342,6 +373,13 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
     }
 
     func selectPlaybackSource(_ sourceKind: PlayerSourceKind) {
+        // The generic system source is selected automatically from the active
+        // MediaRemote session and must not replace the user's default app.
+        if sourceKind == .system {
+            refreshSoon(after: 0.05)
+            return
+        }
+
         let resolvedSource = PlayerModuleSettings.setDefaultSource(
             sourceKind,
             installedControllableSources: defaultSourceOptions
@@ -427,10 +465,28 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
         }
 
         processTrackSwitch(from: nowPlayingState, to: nextState)
+        rememberArtwork(from: nextState)
         if nextState != nowPlayingState {
             nowPlayingState = nextState
         }
         requestArtworkLoadIfNeeded(for: nowPlayingState)
+    }
+
+    private func rememberArtwork(from state: PlayerNowPlayingState) {
+        guard let artworkImage = state.artworkImage,
+              let identity = TrackIdentity(state: state) else {
+            return
+        }
+
+        recentArtworkCache[identity] = artworkImage
+        recentArtworkCacheOrder.removeAll { $0 == identity }
+        recentArtworkCacheOrder.append(identity)
+
+        while recentArtworkCacheOrder.count > 8,
+              let oldestIdentity = recentArtworkCacheOrder.first {
+            recentArtworkCacheOrder.removeFirst()
+            recentArtworkCache.removeValue(forKey: oldestIdentity)
+        }
     }
 
     private func configureWorkspaceObservers() {
@@ -705,7 +761,11 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
         case .playing:
             return PollCadence.playing
         case .paused, .stopped:
-            return PollCadence.idle
+            // Browser tabs do not appear in the controllable-app registry, so
+            // an idle 15-second cadence makes a newly started Chrome/YouTube
+            // session look as if it was not detected. Keep the generic
+            // MediaRemote source responsive without busy-polling.
+            return .seconds(2)
         }
     }
 }

@@ -12,6 +12,7 @@ struct PlayerModuleRenderState {
     let sourceOptions: [PlayerSourceKind]
     let selectedSource: PlayerSourceKind
     let sourceIconImages: [PlayerSourceKind: NSImage]
+    let activeApplicationName: String?
     let previousTrack: () -> Void
     let togglePlayPause: () -> Void
     let nextTrack: () -> Void
@@ -121,14 +122,16 @@ struct PlayerModuleContentView: View {
                 Image(nsImage: artworkImage)
                     .resizable()
                     .scaledToFill()
+                    .frame(width: PlayerPeekMetrics.artworkSize, height: PlayerPeekMetrics.artworkSize)
             } else {
                 Image(systemName: "music.note")
                     .font(.system(size: PlayerPeekMetrics.placeholderSymbolSize, weight: .medium))
                     .foregroundStyle(.white.opacity(PlayerPeekMetrics.placeholderOpacity))
             }
         }
-        .clipShape(.rect(cornerRadius: PlayerPeekMetrics.artworkCornerRadius))
         .frame(width: PlayerPeekMetrics.artworkSize, height: PlayerPeekMetrics.artworkSize)
+        .clipShape(.rect(cornerRadius: PlayerPeekMetrics.artworkCornerRadius))
+        .clipped()
     }
 
     private var artworkView: some View {
@@ -143,6 +146,7 @@ struct PlayerModuleContentView: View {
                     selectedSource: state.selectedSource,
                     options: state.sourceOptions,
                     iconImages: state.sourceIconImages,
+                    activeApplicationName: state.activeApplicationName,
                     selectSource: state.selectSource
                 )
                 .frame(width: PlayerExpandedMetrics.artworkSize - 8)
@@ -446,6 +450,7 @@ private struct PlayerArtworkThumbnailView: View {
                 Image(nsImage: displayedArtworkImage)
                     .resizable()
                     .scaledToFill()
+                    .frame(width: size, height: size)
                     .id(displayedArtworkRevision)
                     .transition(.opacity.combined(with: .scale(scale: 0.985)))
             } else {
@@ -455,8 +460,9 @@ private struct PlayerArtworkThumbnailView: View {
                     .transition(.opacity)
             }
         }
-        .clipShape(.rect(cornerRadius: cornerRadius))
         .frame(width: size, height: size)
+        .clipShape(.rect(cornerRadius: cornerRadius))
+        .clipped()
         .animation(.smooth(duration: 0.22), value: displayedArtworkRevision)
         .onAppear(perform: syncDisplayedArtwork)
         .onChange(of: artworkRevision) { _, _ in
@@ -518,6 +524,7 @@ private struct PlayerSourceSelectorView: View {
     let selectedSource: PlayerSourceKind
     let options: [PlayerSourceKind]
     let iconImages: [PlayerSourceKind: NSImage]
+    let activeApplicationName: String?
     let selectSource: (PlayerSourceKind) -> Void
 
     var body: some View {
@@ -528,11 +535,21 @@ private struct PlayerSourceSelectorView: View {
             ),
             options: options,
             title: \.displayName,
+            menuTitle: { source in
+                if source == .system,
+                   source == selectedSource,
+                   let activeApplicationName,
+                   !activeApplicationName.isEmpty {
+                    return activeApplicationName
+                }
+
+                return source.displayName
+            },
             labelTitle: { sourceLabel(for: $0) },
             isEnabled: options.count > 1,
             localizeLabel: false,
             localizeMenuItems: false,
-            maxLabelWidth: 42,
+            maxLabelWidth: 58,
             icon: { iconImages[$0] },
             iconSize: 13,
             itemSpacing: 4,
@@ -551,6 +568,12 @@ private struct PlayerSourceSelectorView: View {
     }
 
     private func sourceLabel(for source: PlayerSourceKind) -> String {
+        if source == selectedSource,
+           let activeApplicationName,
+           !activeApplicationName.isEmpty {
+            return activeApplicationName
+        }
+
         switch source {
         case .music:
             return "Music"
@@ -558,6 +581,8 @@ private struct PlayerSourceSelectorView: View {
             return "Podcasts"
         case .spotify:
             return "Spotify"
+        case .system:
+            return "Now Playing"
         }
     }
 }

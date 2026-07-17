@@ -3,6 +3,32 @@ import Carbon
 import Foundation
 import ImageIO
 
+private nonisolated func playerDecodedArtworkImage(from data: Data) -> NSImage? {
+    let sourceOptions = [
+        kCGImageSourceShouldCache: false,
+    ] as CFDictionary
+    guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+        return NSImage(data: data)
+    }
+
+    let thumbnailOptions = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceShouldCacheImmediately: true,
+        kCGImageSourceThumbnailMaxPixelSize: 192,
+    ] as CFDictionary
+
+    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions)
+        ?? CGImageSourceCreateImageAtIndex(source, 0, thumbnailOptions) else {
+        return NSImage(data: data)
+    }
+
+    return NSImage(
+        cgImage: cgImage,
+        size: NSSize(width: cgImage.width, height: cgImage.height)
+    )
+}
+
 private actor PlayerAppleScriptWorker {
     func execute(_ lines: [String]) -> PlayerMediaCoordinator.AppleScriptExecutionResult {
         PlayerMediaCoordinator.runAppleScript(lines)
@@ -12,7 +38,7 @@ private actor PlayerAppleScriptWorker {
 private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
     static let shared = PlayerMediaRemoteBridge()
 
-    enum Command: Int32, Sendable {
+    enum Command: Int, Sendable {
         case play = 0
         case pause = 1
         case togglePlayPause = 2
@@ -21,6 +47,8 @@ private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
     }
 
     struct Snapshot {
+        let applicationBundleIdentifier: String?
+        let applicationDisplayName: String?
         let playbackStatus: PlayerPlaybackStatus
         let track: PlayerTrackMetadata?
         let artworkImage: NSImage?
@@ -45,7 +73,10 @@ private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
     private typealias GetStringFunction = @convention(c) (DispatchQueue, @escaping GetStringCallback) -> Void
     private typealias GetBoolFunction = @convention(c) (DispatchQueue, @escaping GetBoolCallback) -> Void
     private typealias GetInfoFunction = @convention(c) (DispatchQueue, @escaping GetInfoCallback) -> Void
-    private typealias SendCommandFunction = @convention(c) (Int32, CFDictionary?) -> Void
+    // Matches boring.notch's MediaRemote bridge signature. The second
+    // argument is an Objective-C object, not a CFDictionary specifically.
+    private typealias SendCommandFunction = @convention(c) (Int, AnyObject?) -> Void
+    private typealias SetElapsedTimeFunction = @convention(c) (Double) -> Void
 
     private final class ContinuationBox<Value>: @unchecked Sendable {
         private let lock = NSLock()
@@ -252,8 +283,18 @@ private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
             setJSONValue(isPlaying, for: "isPlaying", in: &output)
             setJSONValue(artworkURL, for: "artworkURL", in: &output)
 
+            let artworkData: Data? = {
+                if let data = info[artworkDataKey] as? Data {
+                    return data
+                }
+                if let data = info[artworkDataKey] as? NSData {
+                    return data as Data
+                }
+                return nil
+            }()
+
             if artworkIdentity != lastArtworkIdentity,
-               let artworkData = info[artworkDataKey] as? Data,
+               let artworkData,
                !artworkData.isEmpty {
                 output["artworkDataBase64"] = artworkData.base64EncodedString()
                 lastArtworkIdentity = artworkIdentity
@@ -433,6 +474,7 @@ private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
     private let getNowPlayingApplicationIsPlaying: GetBoolFunction?
     private let getNowPlayingInfo: GetInfoFunction?
     private let sendCommand: SendCommandFunction?
+    private let setElapsedTime: SetElapsedTimeFunction?
     private let titleKey: String
     private let artistKey: String
     private let albumKey: String
@@ -470,6 +512,11 @@ private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
             from: handle,
             as: SendCommandFunction.self
         )
+        setElapsedTime = Self.loadFunction(
+            "MRMediaRemoteSetElapsedTime",
+            from: handle,
+            as: SetElapsedTimeFunction.self
+        )
 
         titleKey = Self.loadStringConstant("kMRMediaRemoteNowPlayingInfoTitle", from: handle)
         artistKey = Self.loadStringConstant("kMRMediaRemoteNowPlayingInfoArtist", from: handle)
@@ -484,10 +531,6 @@ private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
     }
 
     func snapshot(for sourceKind: PlayerSourceKind) async -> Snapshot? {
-        guard sourceKind == .podcasts else {
-            return nil
-        }
-
         if let directSnapshot = await directSnapshot(for: sourceKind) {
             return directSnapshot
         }
@@ -503,12 +546,18 @@ private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
         sendCommand?(command.rawValue, nil)
     }
 
+    func seek(to elapsed: TimeInterval) {
+        setElapsedTime?(elapsed)
+    }
+
     private func directSnapshot(for sourceKind: PlayerSourceKind) async -> Snapshot? {
         async let displayID = nowPlayingApplicationDisplayID()
         async let info = nowPlayingInfo()
 
         let resolvedDisplayID = await displayID
-        guard resolvedDisplayID == nil || resolvedDisplayID == sourceKind.bundleIdentifier,
+        guard sourceKind == .system
+            || resolvedDisplayID == nil
+            || resolvedDisplayID == sourceKind.bundleIdentifier,
               let info = await info else {
             return nil
         }
@@ -544,8 +593,8 @@ private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
         }
 
         let artworkImage = payload.artworkDataBase64
-            .flatMap { Data(base64Encoded: $0) }
-            .flatMap(NSImage.init(data:))
+            .flatMap { Data(base64Encoded: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .flatMap(playerDecodedArtworkImage)
 
         return makeSnapshot(
             sourceKind: sourceKind,
@@ -575,7 +624,8 @@ private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
         artworkURL: URL?,
         artworkImage: NSImage?
     ) -> Snapshot? {
-        if let displayID,
+        if sourceKind != .system,
+           let displayID,
            displayID != sourceKind.bundleIdentifier {
             return nil
         }
@@ -609,10 +659,37 @@ private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
         }
 
         return Snapshot(
+            applicationBundleIdentifier: displayID,
+            applicationDisplayName: applicationDisplayName(for: displayID),
             playbackStatus: playbackStatus,
             track: track,
             artworkImage: artworkImage
         )
+    }
+
+    private static func applicationDisplayName(for bundleIdentifier: String?) -> String? {
+        guard let bundleIdentifier,
+              !bundleIdentifier.isEmpty else {
+            return nil
+        }
+
+        if let runningApplication = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleIdentifier)
+            .first,
+           let localizedName = runningApplication.localizedName,
+           !localizedName.isEmpty {
+            return localizedName
+        }
+
+        guard let applicationURL = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: bundleIdentifier
+        ) else {
+            return bundleIdentifier
+        }
+
+        return Bundle(url: applicationURL)?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? Bundle(url: applicationURL)?.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? bundleIdentifier
     }
 
     private func nowPlayingApplicationDisplayID() async -> String? {
@@ -724,12 +801,21 @@ private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
     }
 
     private func imageValue(for key: String, in info: [AnyHashable: Any]) -> NSImage? {
-        guard let data = info[key] as? Data,
-              !data.isEmpty else {
-            return nil
+        if let image = info[key] as? NSImage {
+            return image
         }
 
-        return NSImage(data: data)
+        let data: Data?
+        if let value = info[key] as? Data {
+            data = value
+        } else if let value = info[key] as? NSData {
+            data = value as Data
+        } else {
+            data = nil
+        }
+
+        guard let data, !data.isEmpty else { return nil }
+        return playerDecodedArtworkImage(from: data)
     }
 
     private static func loadFunction<T>(
@@ -756,6 +842,350 @@ private nonisolated final class PlayerMediaRemoteBridge: @unchecked Sendable {
 
         let value = pointer.assumingMemoryBound(to: CFString.self).pointee
         return value as String
+    }
+}
+
+private actor PlayerMediaRemoteAdapter {
+    static let shared = PlayerMediaRemoteAdapter()
+
+    private struct Update: Decodable {
+        let diff: Bool?
+        let payload: Payload
+    }
+
+    private struct Payload: Decodable {
+        let title: String?
+        let artist: String?
+        let album: String?
+        let duration: Double?
+        let durationMicros: Double?
+        let elapsedTime: Double?
+        let elapsedTimeMicros: Double?
+        let elapsedTimeNow: Double?
+        let elapsedTimeNowMicros: Double?
+        let timestampEpochMicros: Double?
+        let playbackRate: Double?
+        let playing: Bool?
+        let artworkData: String?
+        let artworkURL: String?
+        let parentApplicationBundleIdentifier: String?
+        let bundleIdentifier: String?
+    }
+
+    private var process: Process?
+    private var outputHandle: FileHandle?
+    private var pendingContinuation: CheckedContinuation<PlayerMediaRemoteBridge.Snapshot?, Never>?
+    private var outputBuffer = Data()
+    private var latestSnapshot: PlayerMediaRemoteBridge.Snapshot?
+
+    func send(command: Int) async -> Bool {
+        await runCommand(function: "send", argument: String(command))
+    }
+
+    func seek(to elapsed: TimeInterval) async -> Bool {
+        guard elapsed.isFinite else { return false }
+        let positionMicros = max(0, Int64((elapsed * 1_000_000).rounded()))
+        return await runCommand(function: "seek", argument: String(positionMicros))
+    }
+
+    func snapshot() async -> PlayerMediaRemoteBridge.Snapshot? {
+        guard startIfNeeded() else { return nil }
+        if let latestSnapshot {
+            return latestSnapshot
+        }
+
+        let result = await withTaskGroup(of: PlayerMediaRemoteBridge.Snapshot?.self) { group in
+            group.addTask { [weak self] in
+                await self?.waitForSnapshot()
+            }
+            group.addTask {
+                try? await Task.sleep(for: .milliseconds(800))
+                return nil
+            }
+
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result
+        }
+        resolve(nil)
+        return result
+    }
+
+    private func waitForSnapshot() async -> PlayerMediaRemoteBridge.Snapshot? {
+        await withCheckedContinuation { continuation in
+            pendingContinuation = continuation
+            guard let outputHandle else {
+                resolve(nil)
+                return
+            }
+            outputHandle.readabilityHandler = { [weak self] handle in
+                let data = handle.availableData
+                Task { await self?.consume(data) }
+            }
+        }
+    }
+
+    private func startIfNeeded() -> Bool {
+        guard process?.isRunning != true else { return true }
+        stop()
+
+        guard let scriptURL = Bundle.main.url(forResource: "mediaremote-adapter", withExtension: "pl"),
+              let frameworkURL = adapterFrameworkURL() else {
+            return false
+        }
+
+        let process = Process()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = [
+            scriptURL.path,
+            frameworkURL.path,
+            "stream",
+        ]
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        process.terminationHandler = { [weak self] _ in
+            Task { await self?.resolve(nil) }
+        }
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            _ = handle.availableData
+        }
+
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+
+        self.process = process
+        self.outputHandle = outputPipe.fileHandleForReading
+        return true
+    }
+
+    private func runCommand(function: String, argument: String) async -> Bool {
+        guard let scriptURL = Bundle.main.url(forResource: "mediaremote-adapter", withExtension: "pl"),
+              let frameworkURL = adapterFrameworkURL() else {
+            return false
+        }
+
+        let process = Process()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = [scriptURL.path, frameworkURL.path, function, argument]
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            _ = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            _ = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    private func adapterFrameworkURL() -> URL? {
+        if let frameworkURL = Bundle.main.url(
+            forResource: "MediaRemoteAdapter",
+            withExtension: "framework"
+        ) {
+            return frameworkURL
+        }
+
+        if let bundleURL = Bundle.main.url(
+            forResource: "MediaRemoteAdapter",
+            withExtension: "bundle"
+        ) {
+            return materializeFramework(from: bundleURL)
+        }
+
+        // Xcode's synchronized resource group flattens framework bundles into
+        // Resources. Recreate the small framework wrapper expected by the
+        // upstream Perl launcher when that happens.
+        guard let binaryURL = Bundle.main.url(
+            forResource: "MediaRemoteAdapter",
+            withExtension: nil
+        ) else {
+            return nil
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MediaRemoteAdapter.framework", isDirectory: true)
+        let targetURL = directory.appendingPathComponent("MediaRemoteAdapter")
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: targetURL.path) {
+                try FileManager.default.copyItem(at: binaryURL, to: targetURL)
+            }
+            return directory
+        } catch {
+            return nil
+        }
+    }
+
+    private func materializeFramework(from bundleURL: URL) -> URL? {
+        let binaryURL = bundleURL.appendingPathComponent("MediaRemoteAdapter")
+        guard FileManager.default.fileExists(atPath: binaryURL.path) else {
+            return nil
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MediaRemoteAdapter.framework", isDirectory: true)
+        let targetURL = directory.appendingPathComponent("MediaRemoteAdapter")
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: targetURL.path) {
+                try FileManager.default.copyItem(at: binaryURL, to: targetURL)
+            }
+            return directory
+        } catch {
+            return nil
+        }
+    }
+
+    private func consume(_ data: Data) {
+        guard !data.isEmpty else {
+            resolve(nil)
+            stop()
+            return
+        }
+
+        outputBuffer.append(data)
+        let newline = Data([0x0A])
+        while let range = outputBuffer.firstRange(of: newline) {
+            let line = outputBuffer.subdata(in: outputBuffer.startIndex..<range.lowerBound)
+            outputBuffer.removeSubrange(outputBuffer.startIndex..<range.upperBound)
+            guard !line.isEmpty else { continue }
+            let lineText = String(data: line, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if lineText?.isEmpty == true || lineText == "null" {
+                latestSnapshot = nil
+                resolve(nil)
+                continue
+            }
+            if let snapshot = snapshot(from: line) {
+                latestSnapshot = snapshot
+                resolve(snapshot)
+            }
+        }
+    }
+
+    private func snapshot(from data: Data) -> PlayerMediaRemoteBridge.Snapshot? {
+        guard let update = try? JSONDecoder().decode(Update.self, from: data) else {
+            return nil
+        }
+
+        let payload = update.payload
+        let isDiff = update.diff == true
+        let previousSnapshot = latestSnapshot
+        let applicationBundleIdentifier = payload.parentApplicationBundleIdentifier
+            ?? payload.bundleIdentifier
+            ?? (isDiff ? previousSnapshot?.applicationBundleIdentifier : nil)
+
+        let title = trimmedValue(payload.title)
+            ?? (isDiff ? previousSnapshot?.track?.title : nil)
+        guard let title, !title.isEmpty else {
+            return PlayerMediaRemoteBridge.Snapshot(
+                applicationBundleIdentifier: applicationBundleIdentifier,
+                applicationDisplayName: applicationDisplayName(for: applicationBundleIdentifier),
+                playbackStatus: .stopped,
+                track: nil,
+                artworkImage: nil
+            )
+        }
+
+        let durationFromMicros = payload.durationMicros.map { $0 / 1_000_000 }
+        let durationFromPayload = durationFromMicros ?? payload.duration
+        let previousDuration = isDiff ? previousSnapshot?.track?.duration : nil
+        let duration = max(durationFromPayload ?? previousDuration ?? 0, 0)
+
+        let elapsedNowFromMicros = payload.elapsedTimeNowMicros.map { $0 / 1_000_000 }
+        let elapsedFromMicros = payload.elapsedTimeMicros.map { $0 / 1_000_000 }
+        let elapsedFromPayload = elapsedNowFromMicros
+            ?? payload.elapsedTimeNow
+            ?? elapsedFromMicros
+            ?? payload.elapsedTime
+        let previousElapsed = isDiff ? previousSnapshot?.track?.elapsed : nil
+        let elapsed = elapsedFromPayload ?? previousElapsed ?? 0
+
+        let artworkFromPayload = payload.artworkData
+            .flatMap { encodedArtwork in
+                Data(base64Encoded: encodedArtwork.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            .flatMap(playerDecodedArtworkImage)
+        let previousArtwork = isDiff ? previousSnapshot?.artworkImage : nil
+        let artworkImage = artworkFromPayload ?? previousArtwork
+        let artworkURL = payload.artworkURL
+            .flatMap(URL.init(string:))
+            ?? (isDiff ? previousSnapshot?.track?.artworkURL : nil)
+        let track = PlayerTrackMetadata(
+            title: title,
+            artist: trimmedValue(payload.artist)
+                ?? (isDiff ? previousSnapshot?.track?.artist : nil)
+                ?? "Unknown Artist",
+            album: trimmedValue(payload.album)
+                ?? (isDiff ? previousSnapshot?.track?.album : nil),
+            duration: duration,
+            elapsed: max(0, min(duration, elapsed)),
+            artworkURL: artworkURL
+        )
+        let playingFromRate = payload.playbackRate.map { $0 > 0 }
+        let previousIsPlaying = isDiff
+            ? previousSnapshot?.playbackStatus == .playing
+            : nil
+        let isPlaying = playingFromRate ?? payload.playing ?? previousIsPlaying ?? false
+        let status: PlayerPlaybackStatus = isPlaying ? .playing : .paused
+
+        return PlayerMediaRemoteBridge.Snapshot(
+            applicationBundleIdentifier: applicationBundleIdentifier,
+            applicationDisplayName: applicationDisplayName(for: applicationBundleIdentifier),
+            playbackStatus: status,
+            track: track,
+            artworkImage: artworkImage
+        )
+    }
+
+    private func applicationDisplayName(for bundleIdentifier: String?) -> String? {
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return nil }
+        if let application = NSRunningApplication.runningApplications(
+            withBundleIdentifier: bundleIdentifier
+        ).first,
+           let name = application.localizedName,
+           !name.isEmpty {
+            return name
+        }
+        return bundleIdentifier
+    }
+
+    private func trimmedValue(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+
+        return value
+    }
+
+    private func resolve(_ snapshot: PlayerMediaRemoteBridge.Snapshot?) {
+        guard let pendingContinuation else { return }
+        self.pendingContinuation = nil
+        pendingContinuation.resume(returning: snapshot)
+    }
+
+    private func stop() {
+        outputHandle?.readabilityHandler = nil
+        if process?.isRunning == true {
+            process?.terminate()
+        }
+        process = nil
+        outputHandle = nil
+        outputBuffer.removeAll(keepingCapacity: false)
+        latestSnapshot = nil
+        resolve(nil)
     }
 }
 
@@ -788,6 +1218,8 @@ final class PlayerMediaCoordinator {
 
     private struct PlayerSnapshot {
         var source: PlayerSourceKind
+        var applicationBundleIdentifier: String? = nil
+        var applicationDisplayName: String? = nil
         var playbackStatus: PlayerPlaybackStatus
         var track: PlayerTrackMetadata?
         var shuffleMode: PlayerShuffleMode
@@ -841,6 +1273,7 @@ final class PlayerMediaCoordinator {
         makeMusicSource(),
         makeSpotifySource(),
         makePodcastsSource(),
+        makeSystemNowPlayingSource(),
     ]
     private var lastPreferredSourceKind: PlayerSourceKind?
     private var artworkCache: [String: NSImage] = [:]
@@ -856,10 +1289,6 @@ final class PlayerMediaCoordinator {
     private let podcastsSnapshotGraceInterval: TimeInterval = 6
 
     func fetchCurrentState(preferredSourceKind: PlayerSourceKind?) async -> PlayerNowPlayingState {
-        if let preferredSourceKind {
-            return await fetchState(for: preferredSourceKind)
-        }
-
         let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         var pausedCandidate: PlayerSnapshot?
         var automationIssueCandidate: PlayerAutomationIssue?
@@ -875,7 +1304,21 @@ final class PlayerMediaCoordinator {
                     return toState(snapshot)
                 }
 
-                if pausedCandidate == nil {
+                // A paused generic MediaRemote session can still be the active
+                // browser/video session. Scripted app snapshots are different:
+                // Music, Podcasts, and Spotify keep their last track around
+                // after playback stops, so a background paused track must not
+                // become the Player's active source just because the app is
+                // still open.
+                guard shouldKeepPausedSnapshot(
+                    snapshot,
+                    frontmostBundleID: frontmostBundleID
+                ) else {
+                    continue
+                }
+
+                if pausedCandidate == nil
+                    || (snapshot.source == .system && pausedCandidate?.source != .system) {
                     pausedCandidate = snapshot
                 }
             case let .automationIssue(issue):
@@ -899,6 +1342,29 @@ final class PlayerMediaCoordinator {
 
         lastPreferredSourceKind = nil
         return .empty
+    }
+
+    private func shouldKeepPausedSnapshot(
+        _ snapshot: PlayerSnapshot,
+        frontmostBundleID: String?
+    ) -> Bool {
+        // The system source is the persistent MediaRemote session used by
+        // browsers and other Media Session providers. Keep it so the user can
+        // resume a paused video from Player.
+        guard snapshot.source != .system else {
+            return true
+        }
+
+        // A scripted source is only considered paused-active when it belongs
+        // to the app currently in front. This prevents a paused Apple Music
+        // track from replacing a browser session that the user just paused.
+        guard let frontmostBundleID,
+              !frontmostBundleID.isEmpty else {
+            return false
+        }
+
+        return snapshot.applicationBundleIdentifier == frontmostBundleID
+            || snapshot.source.bundleIdentifier == frontmostBundleID
     }
 
     private func fetchState(for sourceKind: PlayerSourceKind) async -> PlayerNowPlayingState {
@@ -964,6 +1430,9 @@ final class PlayerMediaCoordinator {
         case .spotify:
             cacheKey = spotifyArtworkCacheKey(for: track, artworkURL: track.artworkURL)
             remoteArtworkURL = track.artworkURL
+        case .system:
+            cacheKey = systemArtworkCacheKey(for: track, artworkURL: track.artworkURL)
+            remoteArtworkURL = track.artworkURL
         }
 
         if let cachedImage = cachedArtworkImage(for: cacheKey) {
@@ -989,6 +1458,8 @@ final class PlayerMediaCoordinator {
         case .podcasts:
             resolvedArtworkURL = remoteArtworkURL
         case .spotify:
+            resolvedArtworkURL = remoteArtworkURL
+        case .system:
             resolvedArtworkURL = remoteArtworkURL
         }
 
@@ -1116,6 +1587,14 @@ final class PlayerMediaCoordinator {
             return nil
         }
 
+        // The generic MediaRemote source has no application bundle identifier.
+        // It must receive the command directly instead of going through the
+        // launch-and-check path used by AppleScript-backed applications.
+        if targetSource.kind == .system {
+            command.perform(on: targetSource)
+            return immediateRefreshDelay
+        }
+
         if Self.isApplicationRunning(bundleIdentifier: targetSource.kind.bundleIdentifier) {
             command.perform(on: targetSource)
             return immediateRefreshDelay
@@ -1135,6 +1614,8 @@ final class PlayerMediaCoordinator {
     private func toState(_ snapshot: PlayerSnapshot) -> PlayerNowPlayingState {
         PlayerNowPlayingState(
             source: snapshot.source,
+            applicationBundleIdentifier: snapshot.applicationBundleIdentifier,
+            applicationDisplayName: snapshot.applicationDisplayName,
             playbackStatus: snapshot.playbackStatus,
             track: snapshot.track,
             shuffleMode: snapshot.shuffleMode,
@@ -1151,13 +1632,24 @@ final class PlayerMediaCoordinator {
         var ordered: [ScriptSource] = []
 
         if let preferredSourceKind,
-           let preferredSource = sources.first(where: { $0.kind == preferredSourceKind }) {
+           let preferredSource = sources.first(where: { $0.kind == preferredSourceKind }),
+           frontmostBundleID == nil
+                || preferredSourceKind == .system
+                || preferredSource.kind.bundleIdentifier == frontmostBundleID {
             ordered.append(preferredSource)
         }
 
         if let frontmostBundleID,
            let frontmostSource = sources.first(where: { $0.kind.bundleIdentifier == frontmostBundleID }) {
             appendSourceIfNeeded(frontmostSource, to: &ordered)
+        }
+
+        // Browsers and other Media Session providers do not have a dedicated
+        // PlayerSourceKind. Probe the generic MediaRemote session before
+        // falling back to paused Apple Music/Podcasts snapshots.
+        if let systemSource = sources.first(where: { $0.kind == .system }),
+           sources.first(where: { $0.kind.bundleIdentifier == frontmostBundleID }) == nil {
+            appendSourceIfNeeded(systemSource, to: &ordered)
         }
 
         if let lastPreferredSourceKind,
@@ -1283,6 +1775,55 @@ final class PlayerMediaCoordinator {
         )
     }
 
+    private func makeSystemNowPlayingSource() -> ScriptSource {
+        ScriptSource(
+            kind: .system,
+            fetchState: { [weak self] in
+                await self?.fetchSystemNowPlayingState() ?? .unavailable
+            },
+            previousTrack: {
+                Task {
+                    let didSend = await PlayerMediaRemoteAdapter.shared.send(
+                        command: PlayerMediaRemoteBridge.Command.previousTrack.rawValue
+                    )
+                    if !didSend {
+                        PlayerMediaRemoteBridge.shared.send(.previousTrack)
+                    }
+                }
+            },
+            togglePlayPause: {
+                Task {
+                    let didSend = await PlayerMediaRemoteAdapter.shared.send(
+                        command: PlayerMediaRemoteBridge.Command.togglePlayPause.rawValue
+                    )
+                    if !didSend {
+                        PlayerMediaRemoteBridge.shared.send(.togglePlayPause)
+                    }
+                }
+            },
+            nextTrack: {
+                Task {
+                    let didSend = await PlayerMediaRemoteAdapter.shared.send(
+                        command: PlayerMediaRemoteBridge.Command.nextTrack.rawValue
+                    )
+                    if !didSend {
+                        PlayerMediaRemoteBridge.shared.send(.nextTrack)
+                    }
+                }
+            },
+            seek: { elapsed in
+                Task {
+                    let didSeek = await PlayerMediaRemoteAdapter.shared.seek(to: elapsed)
+                    if !didSeek {
+                        PlayerMediaRemoteBridge.shared.seek(to: elapsed)
+                    }
+                }
+            },
+            toggleShuffle: {},
+            cycleRepeat: {}
+        )
+    }
+
     private static func sendPodcastsMediaRemoteCommand(_ command: PlayerMediaRemoteBridge.Command) {
         let didActivate = activateApplicationIfRunning(bundleIdentifier: PlayerSourceKind.podcasts.bundleIdentifier)
         guard didActivate else {
@@ -1382,6 +1923,15 @@ final class PlayerMediaCoordinator {
         }
 
         if let snapshot = await PlayerMediaRemoteBridge.shared.snapshot(for: .podcasts) {
+            // MediaRemote can omit the application identifier during a source
+            // transition. Do not let that compatibility fallback claim a
+            // browser session while Podcasts is merely installed/running.
+            guard snapshot.applicationBundleIdentifier == PlayerSourceKind.podcasts.bundleIdentifier else {
+                lastPodcastsSnapshot = nil
+                lastPodcastsSnapshotDate = nil
+                return .unavailable
+            }
+
             var artworkImage = snapshot.artworkImage
             if let track = snapshot.track {
                 let cacheKey = podcastsArtworkCacheKey(for: track, artworkURL: track.artworkURL)
@@ -1395,6 +1945,8 @@ final class PlayerMediaCoordinator {
 
             let resolvedSnapshot = PlayerSnapshot(
                 source: .podcasts,
+                applicationBundleIdentifier: snapshot.applicationBundleIdentifier,
+                applicationDisplayName: snapshot.applicationDisplayName,
                 playbackStatus: snapshot.playbackStatus,
                 track: snapshot.track,
                 shuffleMode: .unsupported,
@@ -1421,6 +1973,8 @@ final class PlayerMediaCoordinator {
 
         return .snapshot(PlayerSnapshot(
             source: .podcasts,
+            applicationBundleIdentifier: PlayerSourceKind.podcasts.bundleIdentifier,
+            applicationDisplayName: PlayerSourceKind.podcasts.displayName,
             playbackStatus: .stopped,
             track: nil,
             shuffleMode: .unsupported,
@@ -1491,6 +2045,77 @@ final class PlayerMediaCoordinator {
             shuffleMode: .unsupported,
             repeatMode: .unsupported,
             artworkImage: cachedArtworkImage(for: spotifyArtworkCacheKey(for: track, artworkURL: artworkURL))
+        ))
+    }
+
+    private func fetchSystemNowPlayingState() async -> FetchResult {
+        // Keep the adapter as the primary path, matching boring.notch's
+        // persistent MediaRemote stream. Some browser updates contain the
+        // track/progress but omit artwork; in that case the direct MediaRemote
+        // query is used to fill in artwork bytes or the artwork URL.
+        let adapterSnapshot = await PlayerMediaRemoteAdapter.shared.snapshot()
+        let directSnapshot: PlayerMediaRemoteBridge.Snapshot?
+        if adapterSnapshot?.artworkImage == nil,
+           adapterSnapshot?.track?.artworkURL == nil {
+            directSnapshot = await PlayerMediaRemoteBridge.shared.snapshot(for: .system)
+        } else {
+            directSnapshot = nil
+        }
+
+        let snapshot: PlayerMediaRemoteBridge.Snapshot? = {
+            guard let adapterSnapshot else {
+                return directSnapshot
+            }
+
+            guard let directSnapshot,
+                  directSnapshot.artworkImage != nil || directSnapshot.track?.artworkURL != nil else {
+                return adapterSnapshot
+            }
+
+            // Preserve the stream's current playback state, while taking the
+            // direct query's artwork payload and URL.
+            var mergedTrack = adapterSnapshot.track ?? directSnapshot.track
+            if var adapterTrack = mergedTrack,
+               let directArtworkURL = directSnapshot.track?.artworkURL {
+                adapterTrack.artworkURL = directArtworkURL
+                mergedTrack = adapterTrack
+            }
+            return PlayerMediaRemoteBridge.Snapshot(
+                applicationBundleIdentifier: adapterSnapshot.applicationBundleIdentifier
+                    ?? directSnapshot.applicationBundleIdentifier,
+                applicationDisplayName: adapterSnapshot.applicationDisplayName
+                    ?? directSnapshot.applicationDisplayName,
+                playbackStatus: adapterSnapshot.playbackStatus,
+                track: mergedTrack,
+                artworkImage: adapterSnapshot.artworkImage ?? directSnapshot.artworkImage
+            )
+        }()
+
+        guard let snapshot,
+              let track = snapshot.track,
+              !track.title.isEmpty else {
+            return .unavailable
+        }
+
+        // The scripted sources remain the source of truth for apps where we can
+        // offer richer controls. The generic path is reserved for browser and
+        // other Media Session providers.
+        if let bundleIdentifier = snapshot.applicationBundleIdentifier,
+           PlayerSourceKind.allCases.contains(where: {
+               $0 != .system && $0.bundleIdentifier == bundleIdentifier
+           }) {
+            return .unavailable
+        }
+
+        return .snapshot(PlayerSnapshot(
+            source: .system,
+            applicationBundleIdentifier: snapshot.applicationBundleIdentifier,
+            applicationDisplayName: snapshot.applicationDisplayName ?? "Now Playing",
+            playbackStatus: snapshot.playbackStatus,
+            track: track,
+            shuffleMode: .unsupported,
+            repeatMode: .unsupported,
+            artworkImage: snapshot.artworkImage
         ))
     }
 
@@ -1577,6 +2202,19 @@ final class PlayerMediaCoordinator {
 
         return [
             "podcasts",
+            track.title,
+            track.artist,
+            track.album ?? "",
+        ].joined(separator: "\u{1F}")
+    }
+
+    private func systemArtworkCacheKey(for track: PlayerTrackMetadata, artworkURL: URL?) -> String {
+        if let artworkURL {
+            return "system:\(artworkURL.absoluteString)"
+        }
+
+        return [
+            "system",
             track.title,
             track.artist,
             track.album ?? "",
@@ -1779,7 +2417,10 @@ final class PlayerMediaCoordinator {
         }
 
         return await MainActor.run {
-            NSImage(cgImage: cgImage, size: .zero)
+            NSImage(
+                cgImage: cgImage,
+                size: NSSize(width: cgImage.width, height: cgImage.height)
+            )
         }
     }
 

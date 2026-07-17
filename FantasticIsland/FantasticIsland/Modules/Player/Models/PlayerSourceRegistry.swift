@@ -5,6 +5,9 @@ enum PlayerSourceKind: String, CaseIterable, Equatable, Hashable, Identifiable {
     case music
     case podcasts
     case spotify
+    /// A system Now Playing session that is not backed by one of the scripted apps.
+    /// This covers browser media sessions such as YouTube in Chrome.
+    case system
 
     nonisolated var id: String { rawValue }
 
@@ -81,7 +84,7 @@ enum PlayerSourceRegistry {
             switch sourceKind {
             case .music, .podcasts:
                 return true
-            case .spotify:
+            case .spotify, .system:
                 return false
             }
         }

@@ -4,8 +4,10 @@ import CoreGraphics
 enum PlayerPeekMetrics {
     static let defaultHorizontalSpacing: CGFloat = 14
     static let defaultTextSpacing: CGFloat = 6
-    static let defaultTitleFontSize: CGFloat = 17
-    static let defaultArtistFontSize: CGFloat = 13
+    // Keep the transient track-switch card compact so long browser/video
+    // titles do not force the island beyond its measured peek height.
+    static let defaultTitleFontSize: CGFloat = 13
+    static let defaultArtistFontSize: CGFloat = 11
 
     static let defaultContentHorizontalPadding: CGFloat = 2
     static let defaultContentVerticalPadding: CGFloat = 4

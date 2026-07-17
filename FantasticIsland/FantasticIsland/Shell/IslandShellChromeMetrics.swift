@@ -127,7 +127,7 @@ enum CodexIslandChromeMetrics {
 
 @MainActor
 enum CodexIslandPeekMetrics {
-    static let defaultContentHorizontalInset: CGFloat = 16
+    static let defaultContentHorizontalInset: CGFloat = 30
     static let defaultContentTopPadding: CGFloat = 10
     static let defaultContentBottomPadding: CGFloat = 16
 

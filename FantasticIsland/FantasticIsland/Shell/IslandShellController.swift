@@ -47,6 +47,7 @@ final class IslandShellController {
     private var panel: IslandShellPanel?
     private var closedActivationPanel: IslandClosedActivationPanel?
     private var screenObserver: NSObjectProtocol?
+    private var systemVolumeObserver: NSObjectProtocol?
     private var globalClickMonitor: Any?
     private var localClickMonitor: Any?
     private var pendingCloseResize: DispatchWorkItem?
@@ -63,11 +64,26 @@ final class IslandShellController {
                 self?.reposition(refreshRootView: true)
             }
         }
+        systemVolumeObserver = NotificationCenter.default.addObserver(
+            forName: IslandSystemVolumeController.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                // The hosting panel is already a fixed-size surface. Let
+                // SwiftUI animate the HUD layout state; animating an AppKit
+                // frame at the same time produces stale composited frames.
+                self?.reposition()
+            }
+        }
     }
 
     deinit {
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
+        }
+        if let systemVolumeObserver {
+            NotificationCenter.default.removeObserver(systemVolumeObserver)
         }
     }
 
@@ -152,7 +168,7 @@ final class IslandShellController {
         stopEventMonitoring()
     }
 
-    func reposition(refreshRootView: Bool = false) {
+    func reposition(refreshRootView: Bool = false, animateFrame: Bool = false) {
         guard let model,
               let panel,
               let screen = resolvedPanelScreen(for: panel) else {
@@ -163,7 +179,7 @@ final class IslandShellController {
         IslandTransitionDiagnostics.panel(
             "reposition refreshRootView=\(refreshRootView) transitioning=\(model.islandLayoutTransitionInFlight)"
         )
-        updatePanelFrame(panel, using: model, on: screen)
+        updatePanelFrame(panel, using: model, on: screen, animateFrame: animateFrame)
         computeNotchRect(screen: screen)
         syncClosedActivationPanel(using: model, on: screen)
     }
@@ -275,7 +291,11 @@ final class IslandShellController {
             baseCompactWidth: notchWidth,
             hardwareNotchExclusionWidth: hardwareNotchExclusionWidth
         )
-        let adjustedWidth = max(160, baseWidth + model.closedWidthAdjustment)
+        let volumeOverlayWidth = IslandSystemVolumeController.shared.shouldExpandOverlay
+            && !model.islandUsesOpenedVisualState
+            ? IslandSystemVolumeController.closedOverlayWidth
+            : 0
+        let adjustedWidth = max(160, baseWidth + model.closedWidthAdjustment + volumeOverlayWidth)
         let availableWidth = screen.map { max(160, $0.visibleFrame.width - islandScreenHorizontalMargin) } ?? adjustedWidth
         return min(adjustedWidth, availableWidth)
     }
@@ -518,11 +538,24 @@ final class IslandShellController {
         return targetScreen ?? NSScreen.main ?? NSScreen.screens.first
     }
 
-    private func updatePanelFrame(_ panel: IslandShellPanel, using model: IslandAppModel, on screen: NSScreen) {
+    private func updatePanelFrame(
+        _ panel: IslandShellPanel,
+        using model: IslandAppModel,
+        on screen: NSScreen,
+        animateFrame: Bool = false
+    ) {
         let openedFrame = holdingPanelFrame(for: model, on: screen)
 
         if !model.islandLayoutTransitionInFlight, panel.frame != openedFrame {
-            panel.setFrame(openedFrame, display: false)
+            if animateFrame {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.22
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    panel.animator().setFrame(openedFrame, display: true)
+                }
+            } else {
+                panel.setFrame(openedFrame, display: false)
+            }
         }
 
         if model.islandUsesOpenedVisualState {

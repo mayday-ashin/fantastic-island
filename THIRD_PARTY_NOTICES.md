@@ -27,3 +27,14 @@ The source tree contains integration code for the following projects:
 
 This source-only repository does not redistribute their bundled release artifacts.
 If those assets are added back in a future distribution, their versions, licenses, and redistribution notes must be documented here.
+
+## MediaRemoteAdapter
+
+- Repository: https://github.com/TheBoredTeam/boring.notch/tree/main/mediaremote-adapter
+- Copyright: Jonas van den Berg and contributors
+- License: BSD 3-Clause
+
+Fantastic Island bundles the adapter framework and launcher script as runtime
+resources for cross-application Now Playing metadata, including browser media
+sessions. The upstream BSD 3-Clause license applies to those redistributed
+artifacts.

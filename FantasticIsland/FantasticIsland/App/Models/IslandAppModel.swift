@@ -166,7 +166,11 @@ final class IslandAppModel: ObservableObject {
         self.xPostModule = xPostModule
         self.fanModule = fanModule
         self.moduleRegistry = IslandModuleRegistry(modules: allModules)
-        self.isAudioMuted = defaults.bool(forKey: IslandDefaults.audioMutedKey)
+        if defaults.object(forKey: IslandDefaults.fanSoundEnabledKey) != nil {
+            self.isAudioMuted = !defaults.bool(forKey: IslandDefaults.fanSoundEnabledKey)
+        } else {
+            self.isAudioMuted = defaults.bool(forKey: IslandDefaults.audioMutedKey)
+        }
         self.launchAtLoginEnabled = defaults.bool(forKey: IslandDefaults.launchAtLoginKey)
         self.interfaceLanguage = IslandInterfaceLanguage(
             rawValue: defaults.string(forKey: IslandDefaults.interfaceLanguageKey) ?? ""
@@ -205,6 +209,7 @@ final class IslandAppModel: ObservableObject {
         refreshLaunchAtLoginState()
 
         audioController.setMuted(isAudioMuted)
+        IslandSystemVolumeController.shared.start()
         bindModules()
         refreshFromModules(now: .now)
         shellController.show(using: self)
@@ -750,7 +755,10 @@ final class IslandAppModel: ObservableObject {
 
     func toggleAudioMuted() {
         isAudioMuted.toggle()
-        UserDefaults.standard.set(isAudioMuted, forKey: IslandDefaults.audioMutedKey)
+        let defaults = UserDefaults.standard
+        defaults.set(isAudioMuted, forKey: IslandDefaults.audioMutedKey)
+        defaults.set(!isAudioMuted, forKey: IslandDefaults.fanSoundEnabledKey)
+        defaults.synchronize()
         audioController.setMuted(isAudioMuted)
         if !isAudioMuted {
             syncAudioState()

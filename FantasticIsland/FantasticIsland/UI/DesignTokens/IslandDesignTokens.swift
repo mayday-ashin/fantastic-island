@@ -101,8 +101,8 @@ struct IslandDesignTokens: Codable, Equatable {
     struct PlayerPeekTokens: Codable, Equatable {
         var horizontalSpacing: Double = 14
         var textSpacing: Double = 6
-        var titleFontSize: Double = 17
-        var artistFontSize: Double = 13
+        var titleFontSize: Double = 13
+        var artistFontSize: Double = 11
         var contentHorizontalPadding: Double = 2
         var contentVerticalPadding: Double = 4
         var minimumHeight: Double = 64

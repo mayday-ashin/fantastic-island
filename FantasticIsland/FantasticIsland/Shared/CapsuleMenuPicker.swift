@@ -6,6 +6,7 @@ struct CapsuleMenuPicker<Selection: Hashable>: View {
 
     let options: [Selection]
     let title: (Selection) -> String
+    var menuTitle: ((Selection) -> String)? = nil
     var labelTitle: ((Selection) -> String)? = nil
     var isEnabled: Bool = true
     var localizeLabel = true
@@ -81,7 +82,7 @@ struct CapsuleMenuPicker<Selection: Hashable>: View {
             from: anchorView,
             options: options,
             selected: selection,
-            title: title,
+            title: menuTitle ?? title,
             icon: icon,
             localizeTitles: localizeMenuItems
         ) { selectedOption in
