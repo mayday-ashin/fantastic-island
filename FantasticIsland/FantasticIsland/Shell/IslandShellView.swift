@@ -65,6 +65,7 @@ struct IslandShellView: View {
 
     @State private var isHovering = false
     @State private var moduleScrollOffsets: [String: CGFloat] = [:]
+    @State private var scrollableModuleIDs: Set<String> = []
     @ObservedObject private var systemVolumeController = IslandSystemVolumeController.shared
 
     private var usesOpenedVisualState: Bool {
@@ -723,11 +724,20 @@ struct IslandShellView: View {
         presentation: IslandModulePresentationContext
     ) -> some View {
         let moduleID = module.id
-        let needsScrolling = model.moduleNeedsScrolling(for: moduleID, presentation: presentation)
+        // Keep one stable viewport implementation for every module that
+        // supports internal scrolling.  Previously the host switched between
+        // a plain view and ScrollView based on a preference measurement.  On
+        // launch, reinstall, or module changes that measurement can briefly
+        // be zero/stale, so the content was clipped before the host switched
+        // back to a scroll view.  A ScrollView has no visual effect when its
+        // content fits, but it prevents that transient clipping and makes the
+        // user's expanded-height setting behave consistently for every module.
+        let usesConfiguredScrollViewport = module.allowsInternalScrolling
         let viewportHeight = model.moduleViewportHeight(for: moduleID, presentation: presentation)
+        let showsScrollIndicators = scrollableModuleIDs.contains(moduleID)
 
         return Group {
-            if needsScrolling {
+            if usesConfiguredScrollViewport {
                 ScrollViewReader { proxy in
                     ScrollView {
                         moduleContentStack(
@@ -750,7 +760,12 @@ struct IslandShellView: View {
                         }
                         setModuleScrollOffset(newValue, for: moduleID)
                     })
-                    .scrollIndicators(.automatic)
+                    .onScrollGeometryChange(for: Bool.self, of: { geometry in
+                        geometry.contentSize.height > geometry.containerSize.height + 1
+                    }, action: { _, hasScrollableContent in
+                        setModuleScrollable(hasScrollableContent, for: moduleID)
+                    })
+                    .scrollIndicators(showsScrollIndicators ? .automatic : .hidden)
                     .frame(
                         maxWidth: .infinity,
                         minHeight: viewportHeight,
@@ -781,11 +796,6 @@ struct IslandShellView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .onChange(of: needsScrolling) { _, needsScrolling in
-            if !needsScrolling {
-                setModuleScrollOffset(0, for: moduleID, force: true)
-            }
-        }
         .onPreferenceChange(ModuleContentHeightKey.self) { height in
             model.updateMeasuredModuleContentHeight(
                 height,
@@ -807,6 +817,21 @@ struct IslandShellView: View {
         }
 
         moduleScrollOffsets[moduleID] = resolvedOffset
+    }
+
+    private func setModuleScrollable(_ isScrollable: Bool, for moduleID: String) {
+        var updatedIDs = scrollableModuleIDs
+        if isScrollable {
+            updatedIDs.insert(moduleID)
+        } else {
+            updatedIDs.remove(moduleID)
+        }
+
+        guard updatedIDs != scrollableModuleIDs else {
+            return
+        }
+
+        scrollableModuleIDs = updatedIDs
     }
 
     private func snapshotModuleContentViewport(snapshot: IslandModuleRenderSnapshot) -> some View {
