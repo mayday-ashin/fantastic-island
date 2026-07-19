@@ -28,12 +28,13 @@ final class CodexAppServerCoordinator {
     private let codexPath: String
 
     var onEvent: ((CodexAgentEvent) -> Void)?
+    var onQuotaSnapshot: ((CodexQuotaSnapshot) -> Void)?
     var onStatusMessage: ((String) -> Void)?
 
     private(set) var isConnected = false
 
-    init(codexPath: String = "/Applications/Codex.app/Contents/Resources/codex") {
-        self.codexPath = codexPath
+    init(codexPath: String? = nil) {
+        self.codexPath = codexPath ?? Self.resolveCodexPath()
     }
 
     func ensureConnected() {
@@ -81,6 +82,7 @@ final class CodexAppServerCoordinator {
                 self.client = client
                 self.isConnected = true
                 self.onStatusMessage?("Connected")
+                await self.refreshAccountRateLimits(using: client)
                 await self.syncLoadedThreads()
             } catch {
                 guard !Task.isCancelled else {
@@ -90,6 +92,32 @@ final class CodexAppServerCoordinator {
                 self.resetConnectionState(statusMessage: "Unavailable")
             }
         }
+    }
+
+    private func refreshAccountRateLimits(using client: CodexAppServerClient) async {
+        do {
+            let response = try await client.readAccountRateLimits()
+            if let snapshot = CodexQuotaSnapshot.fromRateLimitsResponse(response) {
+                onQuotaSnapshot?(snapshot)
+            }
+        } catch {
+            // Rollout monitoring remains a valid fallback for older Codex
+            // app-server builds that do not expose this request yet.
+        }
+    }
+
+    private static func resolveCodexPath() -> String {
+        let candidates = [
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+            "/Applications/Codex.app/Contents/Resources/codex",
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Applications/ChatGPT.app/Contents/Resources/codex").path,
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Applications/Codex.app/Contents/Resources/codex").path,
+        ]
+
+        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+            ?? candidates[0]
     }
 
     func disconnect() {
@@ -373,6 +401,12 @@ final class CodexAppServerCoordinator {
 
     private func handleNotification(_ notification: CodexAppServerNotification) {
         switch notification {
+        case let .accountRateLimitsUpdated(data):
+            guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let snapshot = CodexQuotaSnapshot.fromRateLimitsResponse(object) else {
+                return
+            }
+            onQuotaSnapshot?(snapshot)
         case let .threadStarted(thread):
             guard !thread.ephemeral else {
                 return

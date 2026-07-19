@@ -8,7 +8,6 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
     static let moduleID = "player"
     private static let transientNotificationAutoDismissDelay: TimeInterval = 1.5
     private static let trackSwitchActivityPriority = 240
-    private static let minimumRefreshInterval: TimeInterval = 0.18
     private static let estimatedArtworkBlockHeight: CGFloat = 112
     private static let estimatedProgressSectionHeight: CGFloat = 30
     private static let estimatedOuterSpacing: CGFloat = 18
@@ -45,28 +44,36 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
         let updatedAt: Date
     }
 
-    private enum PollCadence {
-        static let playing: Duration = .milliseconds(750)
-        static let activeSourceApp: Duration = .seconds(1)
-        static let idle: Duration = .seconds(15)
-    }
-
     let id = PlayerModuleModel.moduleID
     let title = "Player"
     let symbolName = "play.square.fill"
     let iconAssetName: String? = nil
 
     @Published private(set) var nowPlayingState: PlayerNowPlayingState = .empty
+    // Separate from nowPlayingState, as in boring.notch's MusicManager:
+    // transport events update immediately while artwork can decode in the
+    // background without delaying or rebuilding playback metadata.
+    @Published private(set) var artworkImage: NSImage?
     @Published private(set) var installedSourceApps: [PlayerAppDescriptor] = []
     @Published private(set) var defaultSourceOptions: [PlayerSourceKind] = []
     @Published private(set) var defaultSource: PlayerSourceKind?
+    @Published private(set) var trackSwitchPopupEnabled = true
     @Published private(set) var trackSwitchNotification: TrackSwitchNotification?
     @Published private(set) var isResolvingAutomationAccess = false
 
     private let mediaCoordinator = PlayerMediaCoordinator()
-    private var pollingTask: Task<Void, Never>?
+    private var mediaUpdatesTask: Task<Void, Never>?
     private var artworkLoadTask: Task<Void, Never>?
     private var artworkLoadIdentity: TrackIdentity?
+    // A title event can arrive before MediaRemote's artwork diff. Keep the
+    // exact raw bytes as the de-duplication key, as Boring Notch does, so a
+    // later cover update is never confused with a metadata-only event.
+    private var artworkLoadData: Data?
+    // Like boring.notch's separate `artworkData` and `albumArt` properties,
+    // this records which raw artwork bytes the currently displayed image came
+    // from. A new Data value must start a decode even while the old image is
+    // still being displayed.
+    private var artworkImageData: Data?
     private var artworkPrefetchTask: Task<Void, Never>?
     private var artworkPrefetchIdentity: TrackIdentity?
     // The track-switch activity and the standard Player view can be rendered
@@ -74,11 +81,7 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
     // to both hosts, just like the persistent artwork state in boring.notch.
     private var recentArtworkCache: [TrackIdentity: NSImage] = [:]
     private var recentArtworkCacheOrder: [TrackIdentity] = []
-    private var isRefreshing = false
-    private var needsRefreshAfterCurrentPass = false
     private var pendingRefreshWorkItem: DispatchWorkItem?
-    private var pendingRefreshDeadline: Date?
-    private var lastRefreshCompletedAt: Date = .distantPast
     private var lastObservedTrackIdentity: TrackIdentity?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var distributedObservers: [NSObjectProtocol] = []
@@ -95,16 +98,20 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
     ]
 
     init() {
+        let defaults = IslandDefaults.defaults
+        trackSwitchPopupEnabled = defaults.object(
+            forKey: IslandDefaults.playerTrackSwitchPopupEnabledKey
+        ) == nil || defaults.bool(forKey: IslandDefaults.playerTrackSwitchPopupEnabledKey)
         syncSourceAvailability()
         configureWorkspaceObservers()
         configureDistributedPlaybackObservers()
-        pollingTask = Task { [weak self] in
-            await self?.runPollingLoop()
+        mediaUpdatesTask = Task { [weak self] in
+            await self?.observeSystemNowPlayingUpdates()
         }
     }
 
     deinit {
-        pollingTask?.cancel()
+        mediaUpdatesTask?.cancel()
         artworkLoadTask?.cancel()
         artworkPrefetchTask?.cancel()
         pendingRefreshWorkItem?.cancel()
@@ -233,12 +240,9 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
             resolvedNotification = nil
         }
 
-        var resolvedNowPlayingState = nowPlayingState
-        if resolvedNowPlayingState.artworkImage == nil,
-           let identity = TrackIdentity(state: resolvedNowPlayingState),
-           let cachedArtwork = recentArtworkCache[identity] {
-            resolvedNowPlayingState.artworkImage = cachedArtwork
-        }
+        let resolvedNowPlayingState = nowPlayingState
+        let resolvedArtworkImage = artworkImage
+            ?? TrackIdentity(state: resolvedNowPlayingState).flatMap { recentArtworkCache[$0] }
 
         let sourceIconImages = Dictionary(
             uniqueKeysWithValues: defaultSourceOptions.compactMap { sourceKind -> (PlayerSourceKind, NSImage)? in
@@ -271,6 +275,7 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
         return PlayerModuleRenderState(
             presentation: presentation,
             nowPlayingState: resolvedNowPlayingState,
+            artworkImage: resolvedArtworkImage,
             trackSwitchNotification: resolvedNotification,
             supportsTransportControls: supportsTransportControls,
             automationIssue: automationIssue,
@@ -280,40 +285,37 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
             selectedSource: selectedPlaybackSource,
             sourceIconImages: resolvedSourceIconImages,
             activeApplicationName: nowPlayingState.applicationDisplayName,
-            previousTrack: { [weak self] in Task { @MainActor in self?.previousTrack() } },
-            togglePlayPause: { [weak self] in Task { @MainActor in self?.togglePlayPause() } },
-            nextTrack: { [weak self] in Task { @MainActor in self?.nextTrack() } },
-            seek: { [weak self] progress in Task { @MainActor in self?.seek(toProgress: progress) } },
-            toggleShuffle: { [weak self] in Task { @MainActor in self?.toggleShuffle() } },
-            cycleRepeat: { [weak self] in Task { @MainActor in self?.cycleRepeat() } },
-            requestAutomationAccess: { [weak self] in Task { @MainActor in self?.requestAutomationAccess() } },
-            openAutomationSettings: { [weak self] in Task { @MainActor in self?.openAutomationSettings() } },
-            refresh: { [weak self] in Task { @MainActor in self?.refresh() } },
-            selectSource: { [weak self] source in Task { @MainActor in self?.selectPlaybackSource(source) } }
+            // SwiftUI invokes these actions on the model's main actor. Keep
+            // the closures synchronous so a MediaRemote click is dispatched
+            // immediately instead of waiting for an extra unstructured Task
+            // hop before the coordinator can send the command.
+            previousTrack: { [weak self] in self?.previousTrack() },
+            togglePlayPause: { [weak self] in self?.togglePlayPause() },
+            nextTrack: { [weak self] in self?.nextTrack() },
+            seek: { [weak self] progress in self?.seek(toProgress: progress) },
+            toggleShuffle: { [weak self] in self?.toggleShuffle() },
+            cycleRepeat: { [weak self] in self?.cycleRepeat() },
+            requestAutomationAccess: { [weak self] in self?.requestAutomationAccess() },
+            openAutomationSettings: { [weak self] in self?.openAutomationSettings() },
+            refresh: { [weak self] in self?.refresh() },
+            selectSource: { [weak self] source in self?.selectPlaybackSource(source) }
         )
     }
 
     func refresh() {
-        guard !isRefreshing else {
-            needsRefreshAfterCurrentPass = true
-            return
-        }
-
         pendingRefreshWorkItem?.cancel()
         pendingRefreshWorkItem = nil
-        pendingRefreshDeadline = nil
-        isRefreshing = true
         syncSourceAvailability()
 
+        // The persistent MediaRemote subscriber owns visual state. A manual
+        // refresh only ensures the stream has started; it must not re-select
+        // a stale Music/Chrome snapshot over a newer pushed update.
         Task { @MainActor [weak self] in
-            guard let self else {
-                return
-            }
-
+            guard let self else { return }
             let nextState = await self.mediaCoordinator.fetchCurrentState(
                 preferredSourceKind: self.defaultSource
             )
-            self.finishRefresh(with: nextState)
+            self.applyNowPlayingState(nextState)
         }
     }
 
@@ -324,8 +326,23 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
     }
 
     func togglePlayPause() {
+        guard nowPlayingState.track != nil,
+              nowPlayingState.source != nil else {
+            return
+        }
+
+        // Do not locally invert the state: MediaRemote's `playing` value is
+        // authoritative and a local optimistic flip can briefly show the
+        // opposite icon when the command targets a browser session.
+        // Refresh repeatedly because the stream publishes the transport
+        // result asynchronously.
         if let refreshDelay = mediaCoordinator.togglePlayPause(for: nowPlayingState.source) {
-            refreshSoon(after: refreshDelay)
+            refreshSoon(after: min(refreshDelay, 0.08))
+            for delay in [0.42, 0.9] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.refresh()
+                }
+            }
         }
     }
 
@@ -343,7 +360,9 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
         let clampedProgress = min(max(progress, 0), 1)
         let targetElapsed = track.duration * clampedProgress
         mediaCoordinator.seek(to: targetElapsed, for: nowPlayingState.source)
-        nowPlayingState.track?.elapsed = targetElapsed
+        var updatedState = nowPlayingState
+        updatedState.track?.elapsed = targetElapsed
+        nowPlayingState = updatedState
         refreshSoon()
     }
 
@@ -423,17 +442,6 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
     }
 
     private func refreshSoon(after delay: TimeInterval = 0.25) {
-        let now = Date()
-        let earliestDeadline = max(
-            now.addingTimeInterval(delay),
-            lastRefreshCompletedAt.addingTimeInterval(Self.minimumRefreshInterval)
-        )
-
-        if let pendingRefreshDeadline,
-           pendingRefreshDeadline <= earliestDeadline {
-            return
-        }
-
         pendingRefreshWorkItem?.cancel()
 
         let workItem = DispatchWorkItem { [weak self] in
@@ -442,30 +450,50 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
             }
 
             self.pendingRefreshWorkItem = nil
-            self.pendingRefreshDeadline = nil
             self.refresh()
         }
 
         pendingRefreshWorkItem = workItem
-        pendingRefreshDeadline = earliestDeadline
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + max(0, earliestDeadline.timeIntervalSince(now)),
+            deadline: .now() + max(0, delay),
             execute: workItem
         )
     }
 
-    private func finishRefresh(with nextState: PlayerNowPlayingState) {
-        defer {
-            isRefreshing = false
-            lastRefreshCompletedAt = Date()
-            if needsRefreshAfterCurrentPass {
-                needsRefreshAfterCurrentPass = false
-                refreshSoon(after: Self.minimumRefreshInterval)
+    private func observeSystemNowPlayingUpdates() async {
+        let updates = await mediaCoordinator.systemNowPlayingUpdates()
+        for await nextState in updates {
+            guard !Task.isCancelled else {
+                return
             }
+            syncSourceAvailability()
+            applyNowPlayingState(nextState)
+        }
+    }
+
+    private func applyNowPlayingState(_ nextState: PlayerNowPlayingState) {
+        // Keep albumArt independent from the transport snapshot, like
+        // boring.notch's MusicManager. MediaRemote emits many progress and
+        // play/pause diffs without repeating artworkData; those diffs must not
+        // clear an already decoded cover. A new artworkData value starts a
+        // replacement decode while the previous complete cover remains
+        // visible.
+        let previousIdentity = TrackIdentity(state: nowPlayingState)
+        let nextIdentity = TrackIdentity(state: nextState)
+        if previousIdentity != nextIdentity {
+            // A new source/track owns a new artwork slot. Cancelling the old
+            // decode here prevents a late Apple Music image being assigned to
+            // Chrome (or the reverse). The replacement image is still decoded
+            // entirely independently from the playback metadata below.
+            artworkLoadTask?.cancel()
+            artworkLoadTask = nil
+            artworkLoadIdentity = nil
+            artworkLoadData = nil
+            artworkImage = nextState.artworkImage
+            artworkImageData = nil
         }
 
         processTrackSwitch(from: nowPlayingState, to: nextState)
-        rememberArtwork(from: nextState)
         if nextState != nowPlayingState {
             nowPlayingState = nextState
         }
@@ -473,7 +501,7 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
     }
 
     private func rememberArtwork(from state: PlayerNowPlayingState) {
-        guard let artworkImage = state.artworkImage,
+        guard let artworkImage,
               let identity = TrackIdentity(state: state) else {
             return
         }
@@ -487,6 +515,30 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
             recentArtworkCacheOrder.removeFirst()
             recentArtworkCache.removeValue(forKey: oldestIdentity)
         }
+    }
+
+    private func updateTrackSwitchArtworkIfNeeded(
+        with artworkImage: NSImage,
+        for state: PlayerNowPlayingState
+    ) {
+        guard let notification = trackSwitchNotification,
+              let identity = TrackIdentity(state: state),
+              TrackIdentity(source: notification.source, track: notification.track) == identity,
+              notification.artworkImage == nil else {
+            return
+        }
+
+        // The popup may be created before MediaRemote's artwork diff arrives.
+        // Replace only that same track's missing image; never attach a late
+        // image from an older source to a newer notification.
+        trackSwitchNotification = TrackSwitchNotification(
+            activityID: notification.activityID,
+            source: notification.source,
+            track: notification.track,
+            artworkImage: artworkImage,
+            createdAt: notification.createdAt,
+            updatedAt: Date()
+        )
     }
 
     private func configureWorkspaceObservers() {
@@ -550,6 +602,20 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
         return trackSwitchNotification
     }
 
+    func setTrackSwitchPopupEnabled(_ enabled: Bool) {
+        guard trackSwitchPopupEnabled != enabled else {
+            return
+        }
+
+        trackSwitchPopupEnabled = enabled
+        IslandDefaults.defaults.set(enabled, forKey: IslandDefaults.playerTrackSwitchPopupEnabledKey)
+        IslandDefaults.defaults.synchronize()
+
+        if !enabled {
+            trackSwitchNotification = nil
+        }
+    }
+
     private func syncSourceAvailability() {
         let installedSourceApps = PlayerSourceRegistry.installedDescriptors()
         if installedSourceApps != self.installedSourceApps {
@@ -608,6 +674,11 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
             lastObservedTrackIdentity = nextIdentity
         }
 
+        guard trackSwitchPopupEnabled else {
+            trackSwitchNotification = nil
+            return
+        }
+
         guard let previousIdentity,
               previousIdentity != nextIdentity else {
             return
@@ -654,6 +725,8 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
             artworkLoadTask?.cancel()
             artworkLoadTask = nil
             artworkLoadIdentity = nil
+            artworkLoadData = nil
+            artworkImageData = nil
             artworkPrefetchTask?.cancel()
             artworkPrefetchTask = nil
             artworkPrefetchIdentity = nil
@@ -662,40 +735,73 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
 
         scheduleArtworkPrefetchIfNeeded(for: state, identity: identity)
 
-        guard state.artworkImage == nil else {
+        let artworkData = state.artworkData
+
+        // No artwork Data means that this is a transport-only diff. Keep the
+        // current image exactly as boring.notch keeps albumArt on a diff with
+        // no artwork field.
+        guard let artworkData else {
             artworkLoadTask?.cancel()
             artworkLoadTask = nil
             artworkLoadIdentity = nil
+            artworkLoadData = nil
             return
         }
 
-        guard artworkLoadIdentity != identity else {
+        // An already visible image is not sufficient to skip the load: the
+        // raw artwork Data may have changed for the same track. Only skip when
+        // the visible image was decoded from this exact Data value.
+        guard artworkImageData != artworkData else {
+            artworkLoadTask?.cancel()
+            artworkLoadTask = nil
+            artworkLoadIdentity = nil
+            artworkLoadData = nil
+            return
+        }
+
+        guard artworkLoadIdentity != identity || artworkLoadData != artworkData else {
             return
         }
 
         artworkLoadTask?.cancel()
         artworkLoadIdentity = identity
+        artworkLoadData = artworkData
 
-        artworkLoadTask = Task { [weak self, state, identity] in
+        artworkLoadTask = Task { [weak self, state, identity, artworkData] in
             guard let self else {
                 return
             }
 
             defer {
-                if self.artworkLoadIdentity == identity {
+                if self.artworkLoadIdentity == identity,
+                   self.artworkLoadData == artworkData {
                     self.artworkLoadTask = nil
                     self.artworkLoadIdentity = nil
+                    self.artworkLoadData = nil
                 }
             }
 
             guard let artworkImage = await self.mediaCoordinator.loadArtworkIfNeeded(for: state),
                   !Task.isCancelled,
                   self.artworkLoadIdentity == identity,
+                  self.artworkLoadData == artworkData,
                   TrackIdentity(state: self.nowPlayingState) == identity else {
                 return
             }
 
-            self.nowPlayingState.artworkImage = artworkImage
+            // Assign the complete value instead of mutating a nested field in
+            // place. This guarantees @Published emits an update immediately
+            // when artwork arrives after the title/artist snapshot.
+            var updatedState = self.nowPlayingState
+            updatedState.artworkImage = artworkImage
+            self.artworkImage = artworkImage
+            self.artworkImageData = artworkData
+            self.rememberArtwork(from: updatedState)
+            self.updateTrackSwitchArtworkIfNeeded(with: artworkImage, for: updatedState)
+            // Do not write artwork back into nowPlayingState. boring.notch's
+            // MusicManager updates albumArt independently from PlaybackState;
+            // publishing a transport snapshot here can race a newer Chrome /
+            // Apple Music event and make source switching appear delayed.
         }
     }
 
@@ -733,39 +839,4 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
         }
     }
 
-    private func runPollingLoop() async {
-        refresh()
-
-        while !Task.isCancelled {
-            let nextDelay = pollDelay(for: nowPlayingState)
-            do {
-                try await Task.sleep(for: nextDelay)
-            } catch {
-                return
-            }
-            refresh()
-        }
-    }
-
-    private func pollDelay(for state: PlayerNowPlayingState) -> Duration {
-        if !PlayerSourceRegistry.runningControllableSources().isEmpty {
-            switch state.playbackStatus {
-            case .playing:
-                return PollCadence.playing
-            case .paused, .stopped:
-                return PollCadence.activeSourceApp
-            }
-        }
-
-        switch state.playbackStatus {
-        case .playing:
-            return PollCadence.playing
-        case .paused, .stopped:
-            // Browser tabs do not appear in the controllable-app registry, so
-            // an idle 15-second cadence makes a newly started Chrome/YouTube
-            // session look as if it was not detected. Keep the generic
-            // MediaRemote source responsive without busy-polling.
-            return .seconds(2)
-        }
-    }
 }

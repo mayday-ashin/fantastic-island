@@ -163,7 +163,12 @@ struct IslandShellView: View {
         }
 
         if transitionPlan.to == .closed {
-            return model.transitionPhase == .revealingContent || model.transitionPhase == .stable
+            // The closed header participates in the same close animation as
+            // the surface and outgoing expanded content. Do not wait for a
+            // second delayed reveal, which produces a one-frame layout jump.
+            return model.transitionPhase == .morphing
+                || model.transitionPhase == .revealingContent
+                || model.transitionPhase == .stable
         }
 
         return model.transitionPhase == .preparing && transitionPlan.from == .closed
@@ -309,10 +314,10 @@ struct IslandShellView: View {
                     + IslandSystemVolumeController.closedOverlayTrailingInset)
                     * systemVolumeController.overlayExpansionProgress
                 : 0)
-        let resolvedExpandedContentWidth = CodexIslandChromeMetrics.resolvedExpandedContentWidth(
-            baseContentWidth: expandedContentWidth,
-            showsWindDrivePanel: false
-        )
+        // The controller supplies this already-resolved value so the panel
+        // frame, material surface, visual shell and accessibility hit region
+        // all share the exact same horizontal bounds.
+        let resolvedExpandedContentWidth = expandedContentWidth
         let expandedSurfaceWidth = min(
             layoutWidth,
             resolvedExpandedContentWidth + (openSurfaceHorizontalInset * 2)
@@ -380,6 +385,14 @@ struct IslandShellView: View {
         }()
         let materialSurfaceMetrics: (width: CGFloat, height: CGFloat, isOpened: Bool) = {
             guard let transitionPlan else {
+                return (surfaceWidth, surfaceHeight, usesOpenedVisualState)
+            }
+
+            if transitionPlan.from.visualMode == .expanded,
+               transitionPlan.to.visualMode == .closed {
+                // During collapse, animate the material together with the
+                // visible shell. Keeping an expanded material layer here made
+                // the final frame switch shape/size independently.
                 return (surfaceWidth, surfaceHeight, usesOpenedVisualState)
             }
 
@@ -596,7 +609,12 @@ struct IslandShellView: View {
         .foregroundStyle(.white)
         .allowsHitTesting(expandedContentAllowsHitTesting)
         .transaction { transaction in
-            if model.islandLayoutTransitionInFlight {
+            // Keep the close fade inside the same transition as the shell
+            // morph. Disabling this transaction during collapse makes the
+            // expanded center disappear in one frame, which looks like a
+            // jump instead of the surface retracting from all four sides.
+            if model.islandLayoutTransitionInFlight,
+               transitionPlan?.to != .closed {
                 transaction.animation = nil
             }
         }
@@ -619,7 +637,8 @@ struct IslandShellView: View {
                 )
             }
             .transaction { transaction in
-                if model.islandLayoutTransitionInFlight {
+                if model.islandLayoutTransitionInFlight,
+                   transitionPlan?.to != .closed {
                     transaction.animation = nil
                 }
             }
@@ -928,29 +947,23 @@ private struct IslandShellBackplateSurface: View, Equatable {
         }
     }
 
-    @ViewBuilder
     private var materialLayer: some View {
-        if isOpened {
-            Color.clear
-                .frame(width: materialWidth, height: materialHeight)
-                .islandShellLiquidGlass(in: materialShape)
-                .transaction { transaction in
-                    transaction.animation = nil
-                }
-        } else {
-            Color.black
-                .frame(width: materialWidth, height: materialHeight)
-        }
+        Color.clear
+            .frame(width: materialWidth, height: materialHeight)
+            .islandShellLiquidGlass(in: materialShape)
+            .opacity(isOpened ? 1 : 0)
+            .transaction { transaction in
+                transaction.animation = nil
+            }
     }
 
-    @ViewBuilder
     private var backplateLayer: some View {
-        if isOpened {
+        ZStack {
+            Color.black
+
             shape
                 .fill(backplateGradient)
-        } else {
-            shape
-                .fill(Color.black)
+                .opacity(isOpened ? 1 : 0)
         }
     }
 

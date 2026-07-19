@@ -390,7 +390,7 @@ struct CodexModuleContentView: View {
     }
 
     private var emptyStateMinimumHeight: CGFloat {
-        let heatmapHeight: CGFloat = 96
+        let heatmapHeight: CGFloat = 108
         let remainingHeight =
             Self.alignedModuleBodyHeight
             - measuredGlobalInfoCardHeight
@@ -541,6 +541,10 @@ private struct CodexTokenHeatmapView: View, Equatable {
     private let minCellSize: CGFloat = 6.5
     private let maxCellSize: CGFloat = 8.5
     private let preferredCellSpacing: CGFloat = 2.5
+    private let rowLabelWidth: CGFloat = 28
+    private let monthLabelHeight: CGFloat = 16
+    private let sectionSpacing: CGFloat = 4
+    private let legendHeight: CGFloat = 16
 
     static func == (lhs: CodexTokenHeatmapView, rhs: CodexTokenHeatmapView) -> Bool {
         lhs.heatmap == rhs.heatmap
@@ -576,14 +580,15 @@ private struct CodexTokenHeatmapView: View, Equatable {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(height: gridHeight + 24)
+        .frame(height: gridHeight + monthLabelHeight + legendHeight + 12)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Codex token usage heatmap")
     }
 
     private func heatmapGrid(_ heatmap: CodexTokenHeatmapSnapshot, width: CGFloat) -> some View {
+        let calendar = Calendar.autoupdatingCurrent
         let layout = CodexTokenHeatmapGridLayout(
-            width: width,
+            width: max(0, width - rowLabelWidth),
             columnCount: heatmap.weekColumns.count,
             rowCount: CodexTokenHeatmapSnapshot.rowCount,
             minCellSize: minCellSize,
@@ -591,25 +596,125 @@ private struct CodexTokenHeatmapView: View, Equatable {
             preferredCellSpacing: preferredCellSpacing
         )
 
-        return ZStack(alignment: .topLeading) {
-            Canvas { context, _ in
-                drawHeatmap(in: &context, layout: layout, heatmap: heatmap)
-            }
-            .frame(maxWidth: .infinity, minHeight: layout.height, maxHeight: layout.height, alignment: .leading)
+        return VStack(alignment: .leading, spacing: sectionSpacing) {
+            HStack(spacing: 0) {
+                Color.clear
+                    .frame(width: rowLabelWidth, height: monthLabelHeight)
 
-            if let hoverState {
-                CodexTokenHeatmapTooltip(
-                    dateText: hoverState.day.date.formatted(.dateTime.month().day().year()),
-                    tokenText: exactTokenText(hoverState.day.totalTokens)
-                )
-                .position(tooltipPosition(for: hoverState, in: width))
-                .allowsHitTesting(false)
+                monthLabels(heatmap, layout: layout, calendar: calendar)
             }
+
+            HStack(alignment: .top, spacing: 0) {
+                weekdayLabels(calendar: calendar, layout: layout)
+
+                ZStack(alignment: .topLeading) {
+                    Canvas { context, _ in
+                        drawHeatmap(in: &context, layout: layout, heatmap: heatmap)
+                    }
+                    .frame(width: layout.contentWidth, height: layout.height, alignment: .leading)
+
+                    if let hoverState {
+                        CodexTokenHeatmapTooltip(
+                            dateText: hoverState.day.date.formatted(.dateTime.month().day().year()),
+                            tokenText: exactTokenText(hoverState.day.totalTokens)
+                        )
+                        .position(tooltipPosition(for: hoverState, in: layout.contentWidth))
+                        .allowsHitTesting(false)
+                    }
+                }
+                .frame(width: layout.contentWidth, height: layout.height, alignment: .topLeading)
+                .onContinuousHover { phase in
+                    handleHover(phase, layout: layout, heatmap: heatmap)
+                }
+            }
+
+            heatmapLegend
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onContinuousHover { phase in
-            handleHover(phase, layout: layout, heatmap: heatmap)
+    }
+
+    private func weekdayLabels(
+        calendar: Calendar,
+        layout: CodexTokenHeatmapGridLayout
+    ) -> some View {
+        VStack(alignment: .leading, spacing: layout.spacing) {
+            ForEach(0..<CodexTokenHeatmapSnapshot.rowCount, id: \.self) { row in
+                Text(weekdayLabel(for: row, calendar: calendar))
+                    .font(.system(size: 8.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.48))
+                    .lineLimit(1)
+                    .frame(width: rowLabelWidth, height: layout.cellSize, alignment: .leading)
+            }
         }
+        .frame(width: rowLabelWidth, height: layout.height, alignment: .topLeading)
+    }
+
+    private func weekdayLabel(for row: Int, calendar: Calendar) -> String {
+        let weekday = ((calendar.firstWeekday - 1 + row) % 7) + 1
+        switch weekday {
+        case 2: return "Mon"
+        case 4: return "Wed"
+        case 6: return "Fri"
+        default: return ""
+        }
+    }
+
+    private func monthLabels(
+        _ heatmap: CodexTokenHeatmapSnapshot,
+        layout: CodexTokenHeatmapGridLayout,
+        calendar: Calendar
+    ) -> some View {
+        Canvas { context, size in
+            var lastMonthKey: String?
+
+            for (columnIndex, week) in heatmap.weekColumns.enumerated() {
+                guard let date = week.compactMap({ $0?.date }).first else {
+                    continue
+                }
+
+                let components = calendar.dateComponents([.year, .month], from: date)
+                guard let year = components.year,
+                      let month = components.month else {
+                    continue
+                }
+
+                let monthKey = "\(year)-\(month)"
+                guard monthKey != lastMonthKey else {
+                    continue
+                }
+                lastMonthKey = monthKey
+
+                let label = calendar.shortMonthSymbols[month - 1]
+                let text = context.resolve(
+                    Text(label)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.66))
+                )
+                let x = layout.cellRect(column: columnIndex, row: 0).minX
+                context.draw(text, at: CGPoint(x: x, y: size.height / 2), anchor: .leading)
+            }
+        }
+        .frame(width: layout.contentWidth, height: monthLabelHeight, alignment: .leading)
+    }
+
+    private var heatmapLegend: some View {
+        HStack(spacing: 4) {
+            Spacer(minLength: 0)
+
+            Text("Less")
+                .foregroundStyle(.white.opacity(0.45))
+
+            ForEach(Array(greenPalette.reversed().enumerated()), id: \.offset) { _, color in
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(color)
+                    .frame(width: 9, height: 9)
+            }
+
+            Text("More")
+                .foregroundStyle(.white.opacity(0.45))
+        }
+        .font(.system(size: 8.5, weight: .medium))
+        .frame(height: legendHeight, alignment: .trailing)
     }
 
     private var gridHeight: CGFloat {
@@ -618,9 +723,10 @@ private struct CodexTokenHeatmapView: View, Equatable {
     }
 
     private func maxColumnCount(for width: CGFloat) -> Int {
-        max(
+        let gridWidth = max(0, width - rowLabelWidth)
+        return max(
             1,
-            Int(floor((max(width, 0) + preferredCellSpacing) / (minCellSize + preferredCellSpacing)))
+            Int(floor((gridWidth + preferredCellSpacing) / (minCellSize + preferredCellSpacing)))
         )
     }
 
@@ -721,15 +827,23 @@ private struct CodexTokenHeatmapView: View, Equatable {
             return Color.white.opacity(0.055)
         }
 
-        // Use a continuous green scale instead of white steps.  A square
-        // with more tokens is both brighter and more saturated, while low
-        // usage remains visible against the dark island surface.
+        // Use the same four-level green progression as GitHub's contribution
+        // graph. A non-zero day always receives visible green, even when a
+        // single large day sets the maximum for the visible period.
         let ratio = min(max(Double(tokens) / Double(max(maxTokenCount, 1)), 0), 1)
-        let intensity = pow(ratio, 0.65)
-        let red = 0.04 + (0.16 * (1 - intensity))
-        let green = 0.18 + (0.72 * intensity)
-        let blue = 0.06 + (0.16 * (1 - intensity))
-        return Color(red: red, green: green, blue: blue)
+        let level = min(4, max(1, Int(ceil(ratio * 4))))
+        // Keep the existing four colors but reverse the intensity mapping:
+        // lower usage is deeper green and higher usage is brighter green.
+        return greenPalette[4 - level]
+    }
+
+    private var greenPalette: [Color] {
+        [
+            Color(red: 0.608, green: 0.914, blue: 0.659), // #9BE9A8
+            Color(red: 0.251, green: 0.769, blue: 0.388), // #40C463
+            Color(red: 0.188, green: 0.631, blue: 0.306), // #30A14E
+            Color(red: 0.129, green: 0.431, blue: 0.224), // #216E39
+        ]
     }
 
     private func exactTokenText(_ value: Int) -> String {

@@ -195,6 +195,54 @@ struct IslandSettingsView: View {
                 }
             }
 
+            SettingsCard(title: "Mouse Interaction") {
+                SettingsControlRow(
+                    title: "Expansion Trigger",
+                    detail: model.expansionTriggerMode.detail
+                ) {
+                    CapsuleMenuPicker(
+                        selection: Binding(
+                            get: { model.expansionTriggerMode },
+                            set: { model.setExpansionTriggerMode($0) }
+                        ),
+                        options: IslandExpansionTriggerMode.allCases,
+                        title: \.title
+                    )
+                }
+
+                SettingsControlRow(
+                    title: "Collapse Trigger",
+                    detail: model.collapseTriggerMode.detail
+                ) {
+                    CapsuleMenuPicker(
+                        selection: Binding(
+                            get: { model.collapseTriggerMode },
+                            set: { model.setCollapseTriggerMode($0) }
+                        ),
+                        options: IslandCollapseTriggerMode.allCases,
+                        title: \.title
+                    )
+                }
+
+                IslandInteractionDelayRow(
+                    title: "Hover to Expand After",
+                    detail: "Only used when Expansion Trigger is Hover.",
+                    value: Binding(
+                        get: { model.hoverExpansionDelay },
+                        set: { model.setHoverExpansionDelay($0) }
+                    )
+                )
+
+                IslandInteractionDelayRow(
+                    title: "Collapse After Leaving",
+                    detail: "Automatically closes the expanded island after the pointer leaves it.",
+                    value: Binding(
+                        get: { model.expandedAutoCollapseDelay },
+                        set: { model.setExpandedAutoCollapseDelay($0) }
+                    )
+                )
+            }
+
             SettingsCard(title: "Island Size") {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Drag each slider to tune the island independently. 0 keeps the original size; positive values add points and negative values remove points. Each step is 1 point.")
@@ -437,6 +485,17 @@ struct IslandSettingsView: View {
                         }
                     }
                 }
+            }
+
+            SettingsCard(title: "Startup Behavior") {
+                ToggleRow(
+                    title: "Show Recent Conversation on Startup",
+                    detail: "Show the most recent Codex conversation as a popup when Fantastic Island first launches.",
+                    isOn: Binding(
+                        get: { model.codexFanModule.startupRecentConversationPopupEnabled },
+                        set: { model.codexFanModule.setStartupRecentConversationPopupEnabled($0) }
+                    )
+                )
             }
 
             SettingsCard {
@@ -915,6 +974,17 @@ struct IslandSettingsView: View {
                         }
                     }
                 }
+            }
+
+            SettingsCard(title: "Playback Notifications") {
+                ToggleRow(
+                    title: "Show Media Popup",
+                    detail: "Show a short island popup when the active audio or video track changes.",
+                    isOn: Binding(
+                        get: { model.playerModule.trackSwitchPopupEnabled },
+                        set: { model.playerModule.setTrackSwitchPopupEnabled($0) }
+                    )
+                )
             }
 
             SettingsCard(title: "Actions") {
@@ -1618,6 +1688,48 @@ private struct IslandDimensionAdjustmentRow: View {
     private func formattedAdjustment(_ value: CGFloat) -> String {
         let roundedValue = Int(value.rounded())
         return roundedValue > 0 ? "+\(roundedValue) pt" : "\(roundedValue) pt"
+    }
+}
+
+private struct IslandInteractionDelayRow: View {
+    let title: String
+    let detail: String
+    @Binding var value: TimeInterval
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(LocalizedStringKey(title))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+
+                    Text(LocalizedStringKey(detail))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                Text(formattedDelay(value))
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .frame(width: 58, alignment: .trailing)
+            }
+
+            Slider(
+                value: $value,
+                in: 0.5 ... 30,
+                step: 0.5
+            )
+            .frame(maxWidth: .infinity)
+            .tint(.white.opacity(0.88))
+        }
+    }
+
+    private func formattedDelay(_ value: TimeInterval) -> String {
+        String(format: "%.1f s", value)
     }
 }
 

@@ -15,6 +15,12 @@ enum IslandDefaults {
     static let closedHeightAdjustmentKey = "island.settings.layout.closedHeightAdjustment"
     static let expandedWidthAdjustmentKey = "island.settings.layout.expandedWidthAdjustment"
     static let expandedHeightAdjustmentKey = "island.settings.layout.expandedHeightAdjustment"
+    static let playerTrackSwitchPopupEnabledKey = "island.settings.player.trackSwitchPopupEnabled"
+    static let codexStartupRecentConversationPopupEnabledKey = "island.settings.codex.startupRecentConversationPopupEnabled"
+    static let expansionTriggerModeKey = "island.settings.interaction.expansionTriggerMode"
+    static let collapseTriggerModeKey = "island.settings.interaction.collapseTriggerMode"
+    static let hoverExpansionDelayKey = "island.settings.interaction.hoverExpansionDelay"
+    static let expandedAutoCollapseDelayKey = "island.settings.interaction.expandedAutoCollapseDelay"
 
     // Legacy layout suite retained only for migration and downgrade
     // compatibility. New writes use UserDefaults.standard together with the
@@ -23,8 +29,13 @@ enum IslandDefaults {
 
     private static let legacyAudioMutedKey = "audioMuted"
 
+    /// The single durable settings domain used by Fantastic Island.
+    /// UserDefaults writes to the app's preference plist and survives both
+    /// application relaunches and macOS restarts.
+    static let defaults = UserDefaults.standard
+
     static func migrateLegacyValues() {
-        let defaults = UserDefaults.standard
+        let defaults = Self.defaults
 
         if defaults.object(forKey: audioMutedKey) == nil,
            defaults.object(forKey: legacyAudioMutedKey) != nil {
@@ -44,9 +55,7 @@ enum IslandDefaults {
         // Layout settings used to be written to a separate suite.  The rest
         // of Fantastic Island uses the app's standard defaults domain, so
         // copy the old values into that domain before the app reads them.
-        // Keep the reverse copy for older builds that may still be running.
         migrateLayoutValues(from: layoutSettingsDefaults, to: defaults)
-        migrateLayoutValues(from: defaults, to: layoutSettingsDefaults)
         defaults.synchronize()
     }
 
@@ -103,6 +112,56 @@ enum IslandInterfaceLanguage: String, CaseIterable, Identifiable {
             return "zh-Hans"
         case .traditionalChinese:
             return "zh-Hant"
+        }
+    }
+}
+
+enum IslandExpansionTriggerMode: String, CaseIterable, Identifiable {
+    case click
+    case hover
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .click:
+            return "Click"
+        case .hover:
+            return "Hover"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .click:
+            return "Click the collapsed island to expand it."
+        case .hover:
+            return "Keep the pointer over the collapsed island to expand it."
+        }
+    }
+}
+
+enum IslandCollapseTriggerMode: String, CaseIterable, Identifiable {
+    case clickOutside
+    case mouseLeave
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .clickOutside:
+            return "Click Outside"
+        case .mouseLeave:
+            return "Mouse Leave"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .clickOutside:
+            return "Keep the island open until you click outside it."
+        case .mouseLeave:
+            return "Automatically close it after the pointer leaves."
         }
     }
 }

@@ -102,7 +102,15 @@ struct PlayerNowPlayingState: Equatable {
     var track: PlayerTrackMetadata?
     var shuffleMode: PlayerShuffleMode
     var repeatMode: PlayerRepeatMode
+    /// MediaRemote artwork is retained as bytes and decoded away from the
+    /// now-playing event stream, matching boring.notch's delivery model.
+    var artworkData: Data? = nil
     var artworkImage: NSImage?
+    /// The MediaRemote timestamp at which `track.elapsed` was measured.
+    /// boring.notch keeps this anchor in PlaybackState and estimates the
+    /// position at render time, so rebuilding the view never resets playback.
+    var timestampDate: Date = .distantPast
+    var playbackRate: Double = 1
     var automationIssue: PlayerAutomationIssue?
 
     static let empty = PlayerNowPlayingState(
@@ -153,6 +161,9 @@ struct PlayerNowPlayingState: Equatable {
             && lhs.track == rhs.track
             && lhs.shuffleMode == rhs.shuffleMode
             && lhs.repeatMode == rhs.repeatMode
+            && lhs.artworkData == rhs.artworkData
+            && lhs.timestampDate == rhs.timestampDate
+            && lhs.playbackRate == rhs.playbackRate
             && lhs.automationIssue == rhs.automationIssue
             && lhs.artworkComparisonKey == rhs.artworkComparisonKey
     }
@@ -206,11 +217,11 @@ struct PlayerNowPlayingState: Equatable {
     }
 
     var supportsShuffleControl: Bool {
-        shuffleMode != .unsupported && source == .music
+        shuffleMode != .unsupported && source != nil
     }
 
     var supportsRepeatControl: Bool {
-        repeatMode != .unsupported && source == .music
+        repeatMode != .unsupported && source != nil
     }
 
     var collapsedSummaryText: String {
@@ -223,8 +234,11 @@ struct PlayerNowPlayingState: Equatable {
 
     private var artworkComparisonKey: String {
         let identity = trackIdentityForArtwork ?? "none"
-        let presence = artworkImage == nil ? "missing" : "present"
-        return "\(presence):\(identity)"
+        // A later MediaRemote artwork event often has the same track identity
+        // as the title event. Compare the image object too so that a real
+        // cover arriving after metadata is published to SwiftUI immediately.
+        let revision = artworkImage.map { ObjectIdentifier($0).hashValue.description } ?? "missing"
+        return "\(revision):\(identity)"
     }
 
     private var trackIdentityForArtwork: String? {

@@ -4,7 +4,10 @@ final class CodexTokenUsageHistoryScanner {
     var rootURL: URL
     var maxAge: TimeInterval
     var maxFiles: Int
-    var maxReadBytesPerFile: UInt64
+    /// Optional safety cap for callers that deliberately want a partial scan.
+    /// The production scanner leaves this nil so a large rollout file cannot
+    /// silently erase the older days from the heatmap.
+    var maxReadBytesPerFile: UInt64?
     private var cachedFiles: [URL: CachedFileSummary] = [:]
 
     private struct CachedFileSummary {
@@ -17,7 +20,7 @@ final class CodexTokenUsageHistoryScanner {
         rootURL: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions", isDirectory: true),
         maxAge: TimeInterval = 86_400 * 370,
         maxFiles: Int = 1_200,
-        maxReadBytesPerFile: UInt64 = 12 * 1024 * 1024
+        maxReadBytesPerFile: UInt64? = nil
     ) {
         self.rootURL = rootURL
         self.maxAge = maxAge
@@ -30,7 +33,11 @@ final class CodexTokenUsageHistoryScanner {
               let enumerator = FileManager.default.enumerator(
                 at: rootURL,
                 includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey],
-                options: [.skipsHiddenFiles]
+                // The root itself lives under ~/.codex. Do not ask the
+                // enumerator to skip hidden entries: on some macOS releases
+                // that also prevents traversal of the explicitly supplied
+                // hidden root and makes older days disappear from the map.
+                options: []
               ) else {
             cachedFiles.removeAll()
             return .empty
@@ -103,7 +110,7 @@ final class CodexTokenUsageHistoryScanner {
             return history
         }
 
-        let readSize = min(fileSize, maxReadBytesPerFile)
+        let readSize = min(fileSize, maxReadBytesPerFile ?? fileSize)
         let readStart = fileSize - readSize
         try? handle.seek(toOffset: readStart)
         guard var data = try? handle.readToEnd(), !data.isEmpty else {
@@ -123,22 +130,26 @@ final class CodexTokenUsageHistoryScanner {
                 continue
             }
 
-            if let lastTokens = sample.lastTokens {
+            // A rollout can emit several token_count events for the same
+            // turn. `last_token_usage` is the latest snapshot and can repeat;
+            // `total_token_usage` is the session counter. Prefer the delta of
+            // the counter so repeated snapshots do not inflate the heatmap.
+            if let cumulativeTokens = sample.cumulativeTokens {
+                if let previousCumulativeTokens {
+                    let delta = cumulativeTokens >= previousCumulativeTokens
+                        ? cumulativeTokens - previousCumulativeTokens
+                        : cumulativeTokens // Counter reset: keep the new segment.
+                    history.record(tokens: delta, at: sample.capturedAt)
+                } else if startsAtFileBeginning {
+                    history.record(tokens: cumulativeTokens, at: sample.capturedAt)
+                }
+                previousCumulativeTokens = cumulativeTokens
+            } else if let lastTokens = sample.lastTokens {
+                // Older/third-party rollout records may not contain a
+                // cumulative counter. In that case the per-event value is the
+                // only available signal.
                 history.record(tokens: lastTokens, at: sample.capturedAt)
-                previousCumulativeTokens = sample.cumulativeTokens ?? previousCumulativeTokens
-                continue
             }
-
-            guard let cumulativeTokens = sample.cumulativeTokens else {
-                continue
-            }
-
-            if let previousCumulativeTokens {
-                history.record(tokens: max(0, cumulativeTokens - previousCumulativeTokens), at: sample.capturedAt)
-            } else if startsAtFileBeginning {
-                history.record(tokens: cumulativeTokens, at: sample.capturedAt)
-            }
-            previousCumulativeTokens = cumulativeTokens
         }
 
         return history

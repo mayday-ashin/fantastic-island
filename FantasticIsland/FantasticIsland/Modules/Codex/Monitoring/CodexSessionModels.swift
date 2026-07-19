@@ -780,6 +780,38 @@ struct CodexQuotaSnapshot: Equatable {
             return nil
         }
 
+        return fromRateLimitsObject(rateLimits, capturedAt: timestamp)
+    }
+
+    static func fromRateLimitsResponse(
+        _ response: [String: Any],
+        capturedAt: Date = .now
+    ) -> CodexQuotaSnapshot? {
+        let rateLimitsByLimitID = response["rateLimitsByLimitId"] as? [String: Any]
+        let rateLimits =
+            (rateLimitsByLimitID?["codex"] as? [String: Any])
+            ?? (response["rateLimits"] as? [String: Any])
+
+        guard let rateLimits else {
+            return nil
+        }
+
+        var adapted: [String: Any] = [:]
+        adapted["limit_id"] = rateLimits["limitId"] ?? "codex"
+        if let primary = adaptedWindow(rateLimits["primary"] as? [String: Any]) {
+            adapted["primary"] = primary
+        }
+        if let secondary = adaptedWindow(rateLimits["secondary"] as? [String: Any]) {
+            adapted["secondary"] = secondary
+        }
+        return fromRateLimitsObject(adapted, capturedAt: capturedAt)
+    }
+
+    private static func fromRateLimitsObject(
+        _ rateLimits: [String: Any],
+        capturedAt: Date
+    ) -> CodexQuotaSnapshot? {
+
         let sourceKind = preferredSourceKind(for: rateLimits["limit_id"])
         let primary = parseWindow(rateLimits["primary"] as? [String: Any])
         let secondary = parseWindow(rateLimits["secondary"] as? [String: Any])
@@ -793,7 +825,7 @@ struct CodexQuotaSnapshot: Equatable {
             // short window and secondary for the weekly window.
             fiveHour = primary
             week = secondary
-        } else if hasPrimary, isWeeklyWindow(resetAt: primary.resetAt, capturedAt: timestamp) {
+        } else if hasPrimary, isWeeklyWindow(resetAt: primary.resetAt, capturedAt: capturedAt) {
             // Some Codex versions temporarily expose only one window. A
             // reset farther than a day away is the weekly window, even when
             // the server still calls it `primary`.
@@ -816,9 +848,24 @@ struct CodexQuotaSnapshot: Equatable {
             weekRemainingPercent: week.remainingPercent,
             fiveHourResetAt: fiveHour.resetAt,
             weekResetAt: week.resetAt,
-            capturedAt: timestamp,
+            capturedAt: capturedAt,
             sourceKind: sourceKind
         )
+    }
+
+    private static func adaptedWindow(_ dictionary: [String: Any]?) -> [String: Any]? {
+        guard let dictionary else {
+            return nil
+        }
+
+        var adapted: [String: Any] = [:]
+        if let usedPercent = dictionary["usedPercent"] {
+            adapted["used_percent"] = usedPercent
+        }
+        if let resetsAt = dictionary["resetsAt"] {
+            adapted["resets_at"] = resetsAt
+        }
+        return adapted
     }
 
     private static func preferredSourceKind(for value: Any?) -> SourceKind {

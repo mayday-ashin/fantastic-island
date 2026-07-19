@@ -50,6 +50,8 @@ final class IslandShellController {
     private var systemVolumeObserver: NSObjectProtocol?
     private var globalClickMonitor: Any?
     private var localClickMonitor: Any?
+    private var globalMouseMoveMonitor: Any?
+    private var localMouseMoveMonitor: Any?
     private var pendingCloseResize: DispatchWorkItem?
     private var rootViewMetrics: RootViewMetrics?
     private(set) var notchRect: NSRect = .zero
@@ -430,7 +432,12 @@ final class IslandShellController {
         RootViewMetrics(
             compactWidth: screen?.codexIslandCompactWidth ?? Self.defaultNotchSize.width,
             closedHeight: closedNotchHeight(for: screen, model: model),
-            expandedContentWidth: expandedContentWidth(for: screen) + model.expandedWidthAdjustment,
+            // Keep the SwiftUI shell and the NSPanel on one resolved width.
+            // Previously the view received an unbounded base width while the
+            // panel received a separately resolved width; the two paths could
+            // differ after a user width adjustment and leave transparent side
+            // strips in the window reported to other applications.
+            expandedContentWidth: expandedContentWidth(for: model, on: screen),
             peekContentWidth: peekContentWidth(for: screen),
             expandedContentTopClearance: screen?.codexIslandExpandedContentTopClearance ?? 0,
             closedContentNotchExclusionWidth: screen?.codexIslandClosedContentNotchExclusionWidth ?? 0
@@ -642,7 +649,10 @@ final class IslandShellController {
     }
 
     private func startEventMonitoring() {
-        guard globalClickMonitor == nil, localClickMonitor == nil else {
+        guard globalClickMonitor == nil,
+              localClickMonitor == nil,
+              globalMouseMoveMonitor == nil,
+              localMouseMoveMonitor == nil else {
             return
         }
 
@@ -652,6 +662,15 @@ final class IslandShellController {
         }
         localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
             self?.handleClickEvent(event)
+            return event
+        }
+
+        let mouseMoveMask: NSEvent.EventTypeMask = [.mouseMoved]
+        globalMouseMoveMonitor = NSEvent.addGlobalMonitorForEvents(matching: mouseMoveMask) { [weak self] event in
+            self?.handleMouseMoveEvent(event)
+        }
+        localMouseMoveMonitor = NSEvent.addLocalMonitorForEvents(matching: mouseMoveMask) { [weak self] event in
+            self?.handleMouseMoveEvent(event)
             return event
         }
     }
@@ -664,6 +683,14 @@ final class IslandShellController {
         if let localClickMonitor {
             NSEvent.removeMonitor(localClickMonitor)
             self.localClickMonitor = nil
+        }
+        if let globalMouseMoveMonitor {
+            NSEvent.removeMonitor(globalMouseMoveMonitor)
+            self.globalMouseMoveMonitor = nil
+        }
+        if let localMouseMoveMonitor {
+            NSEvent.removeMonitor(localMouseMoveMonitor)
+            self.localMouseMoveMonitor = nil
         }
     }
 
@@ -690,7 +717,9 @@ final class IslandShellController {
                 return
             }
 
-            model.collapseIsland()
+            if model.collapseTriggerMode == .clickOutside {
+                model.collapseIsland()
+            }
             return
         }
 
@@ -702,13 +731,19 @@ final class IslandShellController {
             return
         }
 
+        guard model.expansionTriggerMode == .click else {
+            return
+        }
+
         // Gesture recognizers can miss edge taps during rapid state switches;
         // event-monitor fallback keeps first-click expansion reliable.
         model.expandIsland(reason: .manualTap)
     }
 
     fileprivate func handleClosedActivationMouseDown() {
-        guard let model, !model.islandExpanded else {
+        guard let model,
+              !model.islandExpanded,
+              model.expansionTriggerMode == .click else {
             return
         }
 
@@ -717,6 +752,16 @@ final class IslandShellController {
 
     fileprivate func handleClosedActivationHover(_ hovering: Bool) {
         model?.setIslandClosedHovering(hovering)
+    }
+
+    private func handleMouseMoveEvent(_ event: NSEvent) {
+        guard let model,
+              model.islandExpanded else {
+            return
+        }
+
+        let point = screenPoint(for: event)
+        model.setIslandExpandedMouseInside(isPointInExpandedArea(point))
     }
 
     private func screenPoint(for event: NSEvent) -> NSPoint {

@@ -25,7 +25,10 @@ import SwiftUI
 // Modified for Fantastic Island on 2026-04-13.
 @MainActor
 enum CodexIslandChromeMetrics {
-    static let defaultOpenedShadowHorizontalInset: CGFloat = 18
+    // The panel no longer draws an AppKit shadow. Keeping a horizontal
+    // reserve here makes the rectangular window wider than the visible shell,
+    // which external apps can detect even though the pixels are transparent.
+    static let defaultOpenedShadowHorizontalInset: CGFloat = 0
     static let defaultOpenedShadowBottomInset: CGFloat = 0 // 展开态外层阴影为面板额外占用的底部空间
     static let defaultOpenedSurfaceBottomInset: CGFloat = 0 // 展开态黑色壳体本身相对底边预留的安全距离
     static let defaultOpenedSurfaceContentHorizontalInset: CGFloat = 22
@@ -127,7 +130,7 @@ enum CodexIslandChromeMetrics {
 
 @MainActor
 enum CodexIslandPeekMetrics {
-    static let defaultContentHorizontalInset: CGFloat = 30
+    static let defaultContentHorizontalInset: CGFloat = 45
     static let defaultContentTopPadding: CGFloat = 10
     static let defaultContentBottomPadding: CGFloat = 16
 
@@ -136,7 +139,9 @@ enum CodexIslandPeekMetrics {
     static let defaultContentWidthFactor: CGFloat = 0.32
 
     static let defaultOpenAnimationDuration: CGFloat = 0.3
-    static let defaultCloseAnimationDuration: CGFloat = 0.26
+    // Slightly slower close response keeps the single-state collapse readable
+    // without reintroducing a second reveal phase.
+    static let defaultCloseAnimationDuration: CGFloat = 0.35
     static let defaultChromeRevealAnimationDuration: CGFloat = 0.1
     static let defaultBodyCloseFadeDuration: CGFloat = 0.05
     static let defaultClosedHeaderRevealDuration: CGFloat = 0.22

@@ -74,6 +74,7 @@ final class CodexModuleModel: ObservableObject, IslandModule {
     @Published private(set) var sessionSurface: CodexIslandSurface = .sessionList(actionableSessionID: nil)
     @Published private(set) var isNotificationMode = false
     @Published private(set) var lastActionMessage: String?
+    @Published private(set) var startupRecentConversationPopupEnabled = true
 
     let id = CodexModuleModel.moduleID
     let title = "Codex"
@@ -90,12 +91,16 @@ final class CodexModuleModel: ObservableObject, IslandModule {
     private var pollTimer: Timer?
     private var monitoredSessions: [SessionSnapshot] = []
     private var latestQuotaSnapshot: CodexQuotaSnapshot?
+    private var directQuotaSnapshot: CodexQuotaSnapshot?
     private var tokenUsageHistory = CodexTokenUsageHistory.empty
     private var tokenUsageHeatmapSnapshot = CodexTokenHeatmapSnapshot.empty
     private var tokenUsageHeatmapEndDay = Date.distantPast
     private var lastActivityRefreshAt = Date()
     private var displayedScore = 0.0
     private let pollInterval = 1.0
+    // Quota data is emitted in the active rollout. Poll it at the same
+    // cadence as the visible Codex activity so the remaining amount does not
+    // lag behind a newly completed turn.
     private let activeRolloutPollInterval: TimeInterval = 5
     private let idleRolloutPollInterval: TimeInterval = 20
     private var lastRolloutPollAt = Date.distantPast
@@ -104,6 +109,12 @@ final class CodexModuleModel: ObservableObject, IslandModule {
     private var pendingHookApprovals: [String: PendingHookApprovalDecision] = [:]
 
     init() {
+        startupRecentConversationPopupEnabled = IslandDefaults.defaults.object(
+            forKey: IslandDefaults.codexStartupRecentConversationPopupEnabledKey
+        ) == nil || IslandDefaults.defaults.bool(
+            forKey: IslandDefaults.codexStartupRecentConversationPopupEnabledKey
+        )
+
         hookBridgeServer.onPayload = { [weak self] payload in
             guard let self else {
                 return nil
@@ -113,6 +124,9 @@ final class CodexModuleModel: ObservableObject, IslandModule {
 
         appServerCoordinator.onEvent = { [weak self] event in
             self?.handleAgentEvent(event)
+        }
+        appServerCoordinator.onQuotaSnapshot = { [weak self] snapshot in
+            self?.applyDirectQuotaSnapshot(snapshot)
         }
         appServerCoordinator.onStatusMessage = { [weak self] message in
             self?.appServerStatusText = message
@@ -142,6 +156,19 @@ final class CodexModuleModel: ObservableObject, IslandModule {
     }
 
     var quotaSnapshot: CodexQuotaSnapshot? { latestQuotaSnapshot }
+
+    func setStartupRecentConversationPopupEnabled(_ enabled: Bool) {
+        guard startupRecentConversationPopupEnabled != enabled else {
+            return
+        }
+
+        startupRecentConversationPopupEnabled = enabled
+        IslandDefaults.defaults.set(
+            enabled,
+            forKey: IslandDefaults.codexStartupRecentConversationPopupEnabledKey
+        )
+        IslandDefaults.defaults.synchronize()
+    }
 
     var sessionBuckets: CodexIslandSessionBuckets {
         CodexIslandSessionPresentation.computeBuckets(from: monitoredSessions)
@@ -985,7 +1012,19 @@ final class CodexModuleModel: ObservableObject, IslandModule {
 
     private func applyMonitoringSnapshot(_ snapshot: CodexMonitoringSnapshot, refreshedAt now: Date) {
         monitoredSessions = snapshot.sessions.filter { !$0.isInternalSupportSession }
-        latestQuotaSnapshot = snapshot.quotaSnapshot
+        if let rolloutQuota = snapshot.quotaSnapshot {
+            let shouldPromoteRolloutQuota: Bool
+            if let directQuotaSnapshot {
+                shouldPromoteRolloutQuota = rolloutQuota.capturedAt >= directQuotaSnapshot.capturedAt
+            } else {
+                shouldPromoteRolloutQuota = true
+            }
+
+            if shouldPromoteRolloutQuota {
+                directQuotaSnapshot = rolloutQuota
+            }
+        }
+        latestQuotaSnapshot = directQuotaSnapshot ?? snapshot.quotaSnapshot
         let previousTokenUsageHistory = tokenUsageHistory
         tokenUsageHistory = snapshot.tokenUsageHistory
         updateTokenUsageHeatmapSnapshotIfNeeded(
@@ -994,6 +1033,16 @@ final class CodexModuleModel: ObservableObject, IslandModule {
         )
         reconcileSessionSurface()
         refreshActivityState(now: now)
+    }
+
+    private func applyDirectQuotaSnapshot(_ snapshot: CodexQuotaSnapshot) {
+        if let directQuotaSnapshot,
+           snapshot.capturedAt < directQuotaSnapshot.capturedAt {
+            return
+        }
+
+        directQuotaSnapshot = snapshot
+        latestQuotaSnapshot = snapshot
     }
 
     private func reconcileSessionSurface() {

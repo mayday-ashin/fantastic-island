@@ -7,10 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        4A8D8E6A2F8CAF6100C9A86C /* MediaRemoteAdapter.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4A8D8E692F8CAF6100C9A86C /* MediaRemoteAdapter.framework */; };
+        4A8D8E6B2F8CAF6100C9A86C /* MediaRemoteAdapter.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4A8D8E692F8CAF6100C9A86C /* MediaRemoteAdapter.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		40F986962F966F0B009E4658 /* FantasticIsland.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FantasticIsland.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4A8D8E692F8CAF6100C9A86C /* MediaRemoteAdapter.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MediaRemoteAdapter.framework; path = Support/MediaRemoteAdapter.framework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -26,16 +29,32 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4A8D8E6A2F8CAF6100C9A86C /* MediaRemoteAdapter.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		4A8D8E6C2F8CAF6100C9A86C /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				4A8D8E6B2F8CAF6100C9A86C /* MediaRemoteAdapter.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXGroup section */
 		403C20EA2F8CAF6100C9A86C = {
 			isa = PBXGroup;
 			children = (
 				403C20F52F8CAF6100C9A86C /* FantasticIsland */,
+				4A8D8E692F8CAF6100C9A86C /* MediaRemoteAdapter.framework */,
 				40F986962F966F0B009E4658 /* FantasticIsland.app */,
 			);
 			sourceTree = "<group>";
@@ -50,6 +69,7 @@
 				403C20EF2F8CAF6100C9A86C /* Sources */,
 				403C20F02F8CAF6100C9A86C /* Frameworks */,
 				403C20F12F8CAF6100C9A86C /* Resources */,
+				4A8D8E6C2F8CAF6100C9A86C /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -257,8 +277,12 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
-				GENERATE_INFOPLIST_FILE = NO;
+			ENABLE_USER_SELECTED_FILES = readonly;
+			FRAMEWORK_SEARCH_PATHS = (
+				"$(inherited)",
+				"$(PROJECT_DIR)/Support",
+			);
+			GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Support/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Fantastic Island";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
@@ -293,8 +317,12 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readonly;
-				GENERATE_INFOPLIST_FILE = NO;
+			ENABLE_USER_SELECTED_FILES = readonly;
+			FRAMEWORK_SEARCH_PATHS = (
+				"$(inherited)",
+				"$(PROJECT_DIR)/Support",
+			);
+			GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Support/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Fantastic Island";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";

@@ -4,6 +4,9 @@ import SwiftUI
 struct PlayerModuleRenderState {
     let presentation: IslandModulePresentationContext
     let nowPlayingState: PlayerNowPlayingState
+    /// Album art is maintained independently from the transport snapshot,
+    /// matching boring.notch's MusicManager.albumArt.
+    let artworkImage: NSImage?
     let trackSwitchNotification: PlayerModuleModel.TrackSwitchNotification?
     let supportsTransportControls: Bool
     let automationIssue: PlayerAutomationIssue?
@@ -123,6 +126,12 @@ struct PlayerModuleContentView: View {
                     .resizable()
                     .scaledToFill()
                     .frame(width: PlayerPeekMetrics.artworkSize, height: PlayerPeekMetrics.artworkSize)
+            } else if let sourceIcon = state.sourceIconImages[notification.source] {
+                Image(nsImage: sourceIcon)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(18)
+                    .transition(.opacity)
             } else {
                 Image(systemName: "music.note")
                     .font(.system(size: PlayerPeekMetrics.placeholderSymbolSize, weight: .medium))
@@ -156,7 +165,8 @@ struct PlayerModuleContentView: View {
 
     private var artworkThumbnail: some View {
         PlayerArtworkThumbnailView(
-            artworkImage: state.nowPlayingState.artworkImage,
+            artworkImage: state.artworkImage,
+            fallbackImage: state.sourceIconImages[state.selectedSource],
             artworkRevision: artworkRevision,
             trackIdentity: artworkTrackIdentity,
             hasTrack: state.nowPlayingState.track != nil,
@@ -226,27 +236,34 @@ struct PlayerModuleContentView: View {
     }
 
     private var progressSection: some View {
-        VStack(alignment: .leading, spacing: PlayerExpandedMetrics.progressSectionSpacing) {
-            PlayerProgressBar(
-                progress: displayedProgress,
-                isEnabled: state.nowPlayingState.supportsSeeking,
-                onChanged: { progress in
-                    scrubProgress = progress
-                },
-                onEnded: { progress in
-                    scrubProgress = nil
-                    state.seek(progress)
-                }
-            )
-            .frame(height: 12)
+        TimelineView(.animation(
+            minimumInterval: state.nowPlayingState.playbackStatus.isPlaying ? 0.1 : nil
+        )) { timeline in
+            let progress = displayedProgress(at: timeline.date)
+            let elapsed = displayedElapsed(for: progress)
 
-            HStack {
-                Text(displayedElapsedText)
-                Spacer(minLength: 0)
-                Text(displayedRemainingText)
+            VStack(alignment: .leading, spacing: PlayerExpandedMetrics.progressSectionSpacing) {
+                PlayerProgressBar(
+                    progress: progress,
+                    isEnabled: state.nowPlayingState.supportsSeeking,
+                    onChanged: { progress in
+                        scrubProgress = progress
+                    },
+                    onEnded: { progress in
+                        scrubProgress = nil
+                        state.seek(progress)
+                    }
+                )
+                .frame(height: 12)
+
+                HStack {
+                    Text(timeText(for: elapsed))
+                    Spacer(minLength: 0)
+                    Text("-\(timeText(for: max((state.nowPlayingState.track?.duration ?? 0) - elapsed, 0)))")
+                }
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.66))
             }
-            .font(.system(size: 10, weight: .medium, design: .monospaced))
-            .foregroundStyle(.white.opacity(0.66))
         }
     }
 
@@ -335,12 +352,31 @@ struct PlayerModuleContentView: View {
         return .white.opacity(0.58)
     }
 
-    private var displayedProgress: Double {
-        scrubProgress ?? state.nowPlayingState.progress
+    private func displayedProgress(at date: Date) -> Double {
+        if let scrubProgress {
+            return scrubProgress
+        }
+
+        guard let track = state.nowPlayingState.track,
+              track.duration > 0 else {
+            return 0
+        }
+
+        // Keep the source timestamp as the clock anchor. This is the same
+        // model as boring.notch's estimatedPlaybackPosition(at:): the view
+        // may be created again after a collapse, but the media timeline does
+        // not start over at that moment.
+        let elapsed = track.elapsed
+        let delta = state.nowPlayingState.playbackStatus.isPlaying
+            ? max(date.timeIntervalSince(state.nowPlayingState.timestampDate), 0)
+            : 0
+        let liveElapsed = elapsed + delta * state.nowPlayingState.playbackRate
+
+        return min(max(liveElapsed / track.duration, 0), 1)
     }
 
     private var artworkRevision: Int? {
-        state.nowPlayingState.artworkImage.map { ObjectIdentifier($0).hashValue }
+        state.artworkImage.map { ObjectIdentifier($0).hashValue }
     }
 
     private var artworkTrackIdentity: String? {
@@ -360,28 +396,12 @@ struct PlayerModuleContentView: View {
         state.automationIssue != nil
     }
 
-    private var displayedElapsedText: String {
-        timeText(for: displayedElapsed)
-    }
-
-    private var displayedRemainingText: String {
-        "-\(timeText(for: displayedRemaining))"
-    }
-
-    private var displayedElapsed: TimeInterval {
+    private func displayedElapsed(for progress: Double) -> TimeInterval {
         guard let track = state.nowPlayingState.track else {
             return 0
         }
 
-        return track.duration * displayedProgress
-    }
-
-    private var displayedRemaining: TimeInterval {
-        guard let track = state.nowPlayingState.track else {
-            return 0
-        }
-
-        return max(track.duration - displayedElapsed, 0)
+        return track.duration * progress
     }
 
     private var repeatAccessibilityLabel: String {
@@ -421,102 +441,58 @@ private struct PlayerAnimatedTitleText: View {
 
 private struct PlayerArtworkThumbnailView: View {
     let artworkImage: NSImage?
+    let fallbackImage: NSImage?
     let artworkRevision: Int?
     let trackIdentity: String?
     let hasTrack: Bool
     let size: CGFloat
     let cornerRadius: CGFloat
 
-    @State private var displayedArtworkImage: NSImage?
-    @State private var displayedArtworkRevision: Int?
-    @State private var displayedArtworkTrackIdentity: String?
-    @State private var placeholderFallbackTask: Task<Void, Never>?
-
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.08),
-                            Color.white.opacity(0.03),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-
-            if let displayedArtworkImage {
-                Image(nsImage: displayedArtworkImage)
+        GeometryReader { geometry in
+            // Match boring.notch's AlbumArtView exactly: the image receives a
+            // square proposal, fills that square proportionally, then gets
+            // clipped by the rounded artwork shape. There is no intermediate
+            // @State image cache that can keep an old representation alive.
+            if let artworkImage {
+                Image(nsImage: artworkImage)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: size, height: size)
-                    .id(displayedArtworkRevision)
-                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
-            } else {
-                Image(systemName: "music.note")
-                    .font(.system(size: 28, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.28))
+                    .frame(width: geometry.size.width, height: geometry.size.width)
+                    .clipped()
+                    .cornerRadius(cornerRadius, antialiased: true)
+                    .id(artworkRevision)
                     .transition(.opacity)
+            } else if hasTrack, let fallbackImage {
+                Image(nsImage: fallbackImage)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(geometry.size.width * 0.2)
+                    .frame(width: geometry.size.width, height: geometry.size.width)
+                    .transition(.opacity)
+            } else {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.08),
+                                Color.white.opacity(0.03),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay {
+                        Image(systemName: "music.note")
+                            .font(.system(size: 28, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.28))
+                    }
             }
         }
+        .aspectRatio(1, contentMode: .fit)
         .frame(width: size, height: size)
-        .clipShape(.rect(cornerRadius: cornerRadius))
-        .clipped()
-        .animation(.smooth(duration: 0.22), value: displayedArtworkRevision)
-        .onAppear(perform: syncDisplayedArtwork)
-        .onChange(of: artworkRevision) { _, _ in
-            syncDisplayedArtwork()
-        }
-        .onChange(of: trackIdentity) { _, _ in
-            syncDisplayedArtwork()
-        }
-        .onChange(of: hasTrack) { _, _ in
-            syncDisplayedArtwork()
-        }
-        .onDisappear {
-            placeholderFallbackTask?.cancel()
-        }
-    }
-
-    private func syncDisplayedArtwork() {
-        if let artworkImage {
-            placeholderFallbackTask?.cancel()
-            displayedArtworkImage = artworkImage
-            displayedArtworkRevision = artworkRevision
-            displayedArtworkTrackIdentity = trackIdentity
-            return
-        }
-
-        if !hasTrack {
-            placeholderFallbackTask?.cancel()
-            displayedArtworkImage = nil
-            displayedArtworkRevision = nil
-            displayedArtworkTrackIdentity = nil
-            return
-        }
-
-        if trackIdentity != displayedArtworkTrackIdentity {
-            schedulePlaceholderFallback(for: trackIdentity)
-        }
-    }
-
-    private func schedulePlaceholderFallback(for trackIdentity: String?) {
-        placeholderFallbackTask?.cancel()
-        placeholderFallbackTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(750))
-            guard !Task.isCancelled,
-                  self.trackIdentity == trackIdentity,
-                  self.artworkRevision == nil else {
-                return
-            }
-
-            withAnimation(.smooth(duration: 0.18)) {
-                displayedArtworkImage = nil
-                displayedArtworkRevision = nil
-                displayedArtworkTrackIdentity = trackIdentity
-            }
-        }
+        .drawingGroup(opaque: false)
+        .animation(.easeInOut(duration: 0.28), value: artworkRevision)
     }
 }
 

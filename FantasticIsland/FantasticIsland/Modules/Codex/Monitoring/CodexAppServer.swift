@@ -197,6 +197,7 @@ enum CodexAppServerNotification: Sendable {
     case turnStarted(threadId: String, turn: CodexTurn)
     case turnCompleted(threadId: String, turn: CodexTurn)
     case serverRequestResolved(threadId: String, requestID: CodexAppServerRequestID)
+    case accountRateLimitsUpdated(Data)
     case unknown(method: String)
 }
 
@@ -318,6 +319,20 @@ final class CodexAppServerClient {
         struct Result: Decodable { let threads: [CodexThread] }
         let data = try await sendRequest(method: "thread/loaded/list", params: [:] as [String: String])
         return try JSONDecoder().decode(Result.self, from: data).threads
+    }
+
+    /// Read the server's current account limits. Rollout files only change
+    /// after a new Codex turn, so this request is needed after a reboot or a
+    /// server-side quota reset that happened while the app was offline.
+    func readAccountRateLimits() async throws -> [String: Any] {
+        let data = try await sendRequest(
+            method: "account/rateLimits/read",
+            params: Optional<EmptyRequest>.none
+        )
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CodexAppServerError.rpcError("Invalid account rate-limit response.")
+        }
+        return object
     }
 
     func sendServerRequestResolved(
@@ -493,6 +508,11 @@ final class CodexAppServerClient {
         let decoder = JSONDecoder()
 
         switch method {
+        case "account/rateLimits/updated":
+            if let data = try? JSONSerialization.data(withJSONObject: params ?? [:]) {
+                onNotification?(.accountRateLimitsUpdated(data))
+                return
+            }
         case "thread/started":
             if let payload = try? decoder.decode(ThreadStartedNotification.self, from: data) {
                 onNotification?(.threadStarted(thread: payload.thread))
@@ -569,6 +589,8 @@ final class CodexAppServerClient {
         id.rawValue
     }
 }
+
+private struct EmptyRequest: Encodable {}
 
 protocol CodexAppServerWritableStream: AnyObject {
     func write(_ data: Data) throws

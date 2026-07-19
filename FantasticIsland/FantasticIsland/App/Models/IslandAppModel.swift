@@ -75,6 +75,10 @@ final class IslandAppModel: ObservableObject {
     @Published private(set) var closedHeightAdjustment: CGFloat = 0
     @Published private(set) var expandedWidthAdjustment: CGFloat = 0
     @Published private(set) var expandedHeightAdjustment: CGFloat = 0
+    @Published private(set) var expansionTriggerMode: IslandExpansionTriggerMode = .click
+    @Published private(set) var collapseTriggerMode: IslandCollapseTriggerMode = .mouseLeave
+    @Published private(set) var hoverExpansionDelay: TimeInterval = 1.0
+    @Published private(set) var expandedAutoCollapseDelay: TimeInterval = 3.0
     @Published var islandExpanded = false
     @Published private(set) var islandPeeking = false
     @Published private(set) var islandClosedHovering = false
@@ -148,14 +152,21 @@ final class IslandAppModel: ObservableObject {
     private var notificationAutoCollapseActivityID: String?
     private var notificationAutoCollapseDelay: TimeInterval?
     private var notificationAutoCollapseShouldCollapsePanel = false
+    private var pendingHoverExpansionWorkItem: DispatchWorkItem?
+    private var pendingExpandedAutoCollapseWorkItem: DispatchWorkItem?
+    private var isExpandedMouseInside = true
+    private var hasCompletedInitialModuleRefresh = false
+    private let startupBaselineDate = Date()
 
     init() {
+        // Migrate the shared defaults domain before module models load their
+        // individual persisted settings.
+        IslandDefaults.migrateLegacyValues()
         let codexFanModule = CodexModuleModel()
         let clashModule = ClashModuleModel()
         let playerModule = PlayerModuleModel()
         let xPostModule = XPostModuleModel()
         let fanModule = FanModuleModel()
-        IslandDefaults.migrateLegacyValues()
         let allModules: [any IslandModule] = [codexFanModule, clashModule, playerModule, xPostModule, fanModule]
         let defaults = UserDefaults.standard
         let loadedEnabledModuleIDs = Self.loadEnabledModuleIDs(defaults: defaults, availableModules: allModules)
@@ -193,6 +204,24 @@ final class IslandAppModel: ObservableObject {
         self.expandedHeightAdjustment = Self.loadLayoutAdjustment(
             defaults.double(forKey: IslandDefaults.expandedHeightAdjustmentKey)
         )
+        self.expansionTriggerMode = IslandExpansionTriggerMode(
+            rawValue: defaults.string(forKey: IslandDefaults.expansionTriggerModeKey) ?? ""
+        ) ?? .click
+        self.collapseTriggerMode = IslandCollapseTriggerMode(
+            rawValue: defaults.string(forKey: IslandDefaults.collapseTriggerModeKey) ?? ""
+        ) ?? .mouseLeave
+        self.hoverExpansionDelay = Self.loadInteractionDelay(
+            defaults.object(forKey: IslandDefaults.hoverExpansionDelayKey) == nil
+                ? 1.0
+                : defaults.double(forKey: IslandDefaults.hoverExpansionDelayKey),
+            fallback: 1.0
+        )
+        self.expandedAutoCollapseDelay = Self.loadInteractionDelay(
+            defaults.object(forKey: IslandDefaults.expandedAutoCollapseDelayKey) == nil
+                ? 3.0
+                : defaults.double(forKey: IslandDefaults.expandedAutoCollapseDelayKey),
+            fallback: 3.0
+        )
         self.selectedModuleID = loadedEnabledModuleIDs.contains(codexFanModule.id)
             ? codexFanModule.id
             : loadedEnabledModuleIDs.first ?? codexFanModule.id
@@ -222,6 +251,11 @@ final class IslandAppModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             self?.settingsWindowController.prepare()
         }
+    }
+
+    deinit {
+        pendingHoverExpansionWorkItem?.cancel()
+        pendingExpandedAutoCollapseWorkItem?.cancel()
     }
 
     var modules: [any IslandModule] {
@@ -545,6 +579,11 @@ final class IslandAppModel: ObservableObject {
         }
 
         let fromState = logicalPresentationState
+        pendingHoverExpansionWorkItem?.cancel()
+        pendingHoverExpansionWorkItem = nil
+        pendingExpandedAutoCollapseWorkItem?.cancel()
+        pendingExpandedAutoCollapseWorkItem = nil
+        isExpandedMouseInside = true
         openReason = reason
         if !reason.isNotification {
             presentedActivity = nil
@@ -567,6 +606,10 @@ final class IslandAppModel: ObservableObject {
         }
 #endif
         let fromState = logicalPresentationState
+        pendingHoverExpansionWorkItem?.cancel()
+        pendingHoverExpansionWorkItem = nil
+        pendingExpandedAutoCollapseWorkItem?.cancel()
+        pendingExpandedAutoCollapseWorkItem = nil
         notificationAutoCollapseTask?.cancel()
         notificationAutoCollapseTask = nil
         openReason = nil
@@ -616,6 +659,94 @@ final class IslandAppModel: ObservableObject {
         }
 
         islandClosedHovering = resolvedHovering
+        if resolvedHovering && expansionTriggerMode == .hover {
+            scheduleHoverExpansion()
+        } else {
+            pendingHoverExpansionWorkItem?.cancel()
+            pendingHoverExpansionWorkItem = nil
+        }
+    }
+
+    func setIslandExpandedMouseInside(_ inside: Bool) {
+        guard islandExpanded else {
+            pendingExpandedAutoCollapseWorkItem?.cancel()
+            pendingExpandedAutoCollapseWorkItem = nil
+            return
+        }
+
+        guard collapseTriggerMode == .mouseLeave else {
+            pendingExpandedAutoCollapseWorkItem?.cancel()
+            pendingExpandedAutoCollapseWorkItem = nil
+            return
+        }
+
+        guard isExpandedMouseInside != inside else {
+            return
+        }
+
+        isExpandedMouseInside = inside
+        if inside {
+            pendingExpandedAutoCollapseWorkItem?.cancel()
+            pendingExpandedAutoCollapseWorkItem = nil
+        } else {
+            scheduleExpandedAutoCollapse()
+        }
+    }
+
+    func setExpansionTriggerMode(_ mode: IslandExpansionTriggerMode) {
+        guard expansionTriggerMode != mode else {
+            return
+        }
+
+        expansionTriggerMode = mode
+        IslandDefaults.defaults.set(mode.rawValue, forKey: IslandDefaults.expansionTriggerModeKey)
+
+        pendingHoverExpansionWorkItem?.cancel()
+        pendingHoverExpansionWorkItem = nil
+        if mode == .hover && islandClosedHovering {
+            scheduleHoverExpansion()
+        }
+    }
+
+    func setCollapseTriggerMode(_ mode: IslandCollapseTriggerMode) {
+        guard collapseTriggerMode != mode else {
+            return
+        }
+
+        collapseTriggerMode = mode
+        IslandDefaults.defaults.set(mode.rawValue, forKey: IslandDefaults.collapseTriggerModeKey)
+
+        pendingExpandedAutoCollapseWorkItem?.cancel()
+        pendingExpandedAutoCollapseWorkItem = nil
+        if mode == .mouseLeave && islandExpanded && !isExpandedMouseInside {
+            scheduleExpandedAutoCollapse()
+        }
+    }
+
+    func setHoverExpansionDelay(_ value: TimeInterval) {
+        let normalizedValue = Self.loadInteractionDelay(value, fallback: 1.0)
+        guard abs(hoverExpansionDelay - normalizedValue) > 0.001 else {
+            return
+        }
+
+        hoverExpansionDelay = normalizedValue
+        IslandDefaults.defaults.set(normalizedValue, forKey: IslandDefaults.hoverExpansionDelayKey)
+        if expansionTriggerMode == .hover && islandClosedHovering {
+            scheduleHoverExpansion()
+        }
+    }
+
+    func setExpandedAutoCollapseDelay(_ value: TimeInterval) {
+        let normalizedValue = Self.loadInteractionDelay(value, fallback: 3.0)
+        guard abs(expandedAutoCollapseDelay - normalizedValue) > 0.001 else {
+            return
+        }
+
+        expandedAutoCollapseDelay = normalizedValue
+        IslandDefaults.defaults.set(normalizedValue, forKey: IslandDefaults.expandedAutoCollapseDelayKey)
+        if islandExpanded && !isExpandedMouseInside {
+            scheduleExpandedAutoCollapse()
+        }
     }
 
     func toggleIslandExpansionFromShortcut() {
@@ -1090,14 +1221,20 @@ final class IslandAppModel: ObservableObject {
         panelPreparation?()
         advanceTransitionToMorph(planID: plan.id)
 
-        let revealWorkItem = DispatchWorkItem { [weak self, planID = plan.id] in
-            self?.advanceTransitionToReveal(planID: planID)
+        // Keep a collapse as one composited SwiftUI state change. Boring.notch
+        // animates the whole notch layout from one state to the other; a
+        // second delayed header reveal here used to introduce a visible
+        // middle frame while the surface was already collapsed.
+        if target != .closed {
+            let revealWorkItem = DispatchWorkItem { [weak self, planID = plan.id] in
+                self?.advanceTransitionToReveal(planID: planID)
+            }
+            pendingTransitionRevealWorkItem = revealWorkItem
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + revealDelay(from: fromState, to: target),
+                execute: revealWorkItem
+            )
         }
-        pendingTransitionRevealWorkItem = revealWorkItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + revealDelay(from: fromState, to: target),
-            execute: revealWorkItem
-        )
 
         let settleWorkItem = DispatchWorkItem { [weak self, planID = plan.id] in
             self?.completeTransition(planID: planID)
@@ -1304,7 +1441,14 @@ final class IslandAppModel: ObservableObject {
             now: now
         )
         syncFanModulePresentation()
-        reconcileActivities(allowAutoPresentation: true)
+        // Historical completed Codex sessions are already present during the
+        // first refresh. Treating them as newly-created activities causes the
+        // last conversation to pop up on every app launch. New activity
+        // updates continue to auto-present after this baseline pass.
+        let allowInitialAutoPresentation = hasCompletedInitialModuleRefresh
+            || codexFanModule.startupRecentConversationPopupEnabled
+        reconcileActivities(allowAutoPresentation: allowInitialAutoPresentation)
+        hasCompletedInitialModuleRefresh = true
         rebuildStableRenderSnapshots()
         syncAudioState()
     }
@@ -1515,6 +1659,16 @@ final class IslandAppModel: ObservableObject {
         }
 
         guard let previousActivity = previousActivitiesByID[activity.id] else {
+            // Codex discovers persisted sessions asynchronously after the
+            // app has already performed its first module refresh. Without a
+            // time baseline, those historical sessions look like newly
+            // created activities and briefly pop up on every launch.
+            if activity.moduleID == codexFanModule.id,
+               !codexFanModule.startupRecentConversationPopupEnabled,
+               activity.updatedAt < startupBaselineDate {
+                return false
+            }
+
             return true
         }
 
@@ -1926,16 +2080,76 @@ final class IslandAppModel: ObservableObject {
         let storedValue = Double(normalizedValue)
         // UserDefaults.standard is the app's existing configuration plist.
         // Write there first so all settings share the same durable domain.
-        let standardDefaults = UserDefaults.standard
+        let standardDefaults = IslandDefaults.defaults
         standardDefaults.set(storedValue, forKey: defaultsKey)
         standardDefaults.synchronize()
-
-        // Keep the previous layout suite in sync for downgrade/rollback
-        // compatibility with builds that still read that suite.
-        let legacyLayoutDefaults = IslandDefaults.layoutSettingsDefaults
-        legacyLayoutDefaults.set(storedValue, forKey: defaultsKey)
-        legacyLayoutDefaults.synchronize()
         shellController.reposition(refreshRootView: true)
+    }
+
+    private func scheduleHoverExpansion() {
+        pendingHoverExpansionWorkItem?.cancel()
+        pendingHoverExpansionWorkItem = nil
+
+        guard expansionTriggerMode == .hover,
+              !islandExpanded,
+              islandClosedHovering else {
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.expansionTriggerMode == .hover,
+                  self.islandClosedHovering,
+                  !self.islandExpanded else {
+                return
+            }
+
+            self.pendingHoverExpansionWorkItem = nil
+            self.expandIsland(reason: .manualTap)
+        }
+        pendingHoverExpansionWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + hoverExpansionDelay,
+            execute: workItem
+        )
+    }
+
+    private func scheduleExpandedAutoCollapse() {
+        pendingExpandedAutoCollapseWorkItem?.cancel()
+        pendingExpandedAutoCollapseWorkItem = nil
+
+        guard collapseTriggerMode == .mouseLeave,
+              islandExpanded,
+              !isExpandedMouseInside else {
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.islandExpanded,
+                  !self.isExpandedMouseInside else {
+                return
+            }
+
+            self.pendingExpandedAutoCollapseWorkItem = nil
+            self.collapseIsland()
+        }
+        pendingExpandedAutoCollapseWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + expandedAutoCollapseDelay,
+            execute: workItem
+        )
+    }
+
+    private static func loadInteractionDelay(
+        _ value: TimeInterval,
+        fallback: TimeInterval
+    ) -> TimeInterval {
+        guard value.isFinite else {
+            return fallback
+        }
+
+        return min(30, max(0.5, (value * 2).rounded() / 2))
     }
 
     private static func loadLayoutAdjustment(_ value: Double) -> CGFloat {
