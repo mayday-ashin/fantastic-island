@@ -482,7 +482,12 @@ final class IslandAppModel: ObservableObject {
         return closedSurfaceHeight
     }
     var selectedModuleViewportHeight: CGFloat {
-        max(0, selectedModuleContentHeight - CodexIslandChromeMetrics.moduleChromeHeight)
+        max(
+            0,
+            selectedModuleContentHeight
+                + expandedHeightAdjustment
+                - CodexIslandChromeMetrics.moduleChromeHeight
+        )
     }
     var selectedModuleNeedsScrolling: Bool {
         moduleNeedsScrolling(for: selectedModule.id, presentation: selectedModulePresentationContext)
@@ -497,7 +502,12 @@ final class IslandAppModel: ObservableObject {
         for moduleID: String,
         presentation: IslandModulePresentationContext? = nil
     ) -> CGFloat {
-        max(0, resolvedExpandedContentHeight(for: moduleID, presentation: presentation) - CodexIslandChromeMetrics.moduleChromeHeight)
+        max(
+            0,
+            resolvedExpandedContentHeight(for: moduleID, presentation: presentation)
+                + (moduleID == selectedModuleID ? expandedHeightAdjustment : 0)
+                - CodexIslandChromeMetrics.moduleChromeHeight
+        )
     }
 
     func moduleNeedsScrolling(

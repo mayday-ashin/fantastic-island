@@ -765,6 +765,16 @@ struct IslandShellView: View {
                     scrollAction: IslandModuleScrollAction(),
                     scrollOffset: 0
                 )
+                // Non-scrolling modules still occupy the same configured
+                // viewport as Codex. Their content remains top-aligned, but
+                // the module host now follows the user's expanded height
+                // instead of collapsing to the module's intrinsic height.
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: viewportHeight,
+                    maxHeight: viewportHeight,
+                    alignment: .topLeading
+                )
                 .onAppear {
                     setModuleScrollOffset(0, for: moduleID, force: true)
                 }
@@ -805,6 +815,12 @@ struct IslandShellView: View {
             presentation: snapshot.presentation,
             scrollAction: IslandModuleScrollAction(),
             scrollOffset: 0
+        )
+        .frame(
+            maxWidth: .infinity,
+            minHeight: model.selectedModuleViewportHeight,
+            maxHeight: model.selectedModuleViewportHeight,
+            alignment: .topLeading
         )
         .onPreferenceChange(ModuleContentHeightKey.self) { height in
             model.updateMeasuredModuleContentHeight(

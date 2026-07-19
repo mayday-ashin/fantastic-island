@@ -175,7 +175,10 @@ final class PlayerModuleModel: ObservableObject, IslandModule {
 
         return CodexIslandChromeMetrics.moduleChromeHeight + max(estimatedBodyHeight, alignedBodyHeight)
     }
-    var allowsInternalScrolling: Bool { false }
+    // Match Codex: if the user chooses an expanded height smaller than the
+    // module content, the shared island host provides a vertical scroller
+    // instead of clipping the Player UI.
+    var allowsInternalScrolling: Bool { true }
 
     var supportsTransportControls: Bool {
         guard nowPlayingState.automationIssue == nil else {

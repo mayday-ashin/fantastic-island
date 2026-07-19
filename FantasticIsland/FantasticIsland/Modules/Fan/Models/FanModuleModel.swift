@@ -28,7 +28,9 @@ final class FanModuleModel: ObservableObject, IslandModule {
 
     var collapsedSummaryItems: [CollapsedSummaryItem] { [] }
     var taskActivityContribution = TaskActivityContribution()
-    var allowsInternalScrolling: Bool { false }
+    // Keep the Fan module inside the same configurable expanded viewport as
+    // Codex when the user selects a short expanded height.
+    var allowsInternalScrolling: Bool { true }
 
     var preferredOpenedContentHeight: CGFloat {
         CodexIslandChromeMetrics.moduleChromeHeight + FanModuleMetrics.visualHeight

@@ -95,7 +95,9 @@ final class XPostModuleModel: ObservableObject, IslandModule {
         Self.preferredExpandedContentHeight
     }
 
-    var allowsInternalScrolling: Bool { false }
+    // Use the shared expanded viewport behavior so a short user-configured
+    // island scrolls this module instead of clipping its controls.
+    var allowsInternalScrolling: Bool { true }
 
     var validation: XPostTextValidation {
         XPostTextValidator.validate(draftText)
