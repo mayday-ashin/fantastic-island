@@ -57,11 +57,10 @@ final class CodexModuleModel: ObservableObject, IslandModule {
     private static let estimatedTokenHeatmapCardHeight: CGFloat = 96
     private static let tokenUsageHeatmapDayCount = 365
     private static let estimatedContentSpacing: CGFloat = 12
-    // A normal non-actionable summary row is shorter than the previous
-    // empty-state placeholder. This is only the first-launch fallback; once
-    // a real summary is rendered, its measured height is persisted and used
-    // for both states.
+    // The standard summary card height is user-controlled. Keep the existing
+    // default so an upgrade does not make the card unexpectedly disappear.
     private static let standardConversationCardHeightFallback: CGFloat = 72
+    private static let standardConversationCardHeightRange: ClosedRange<CGFloat> = 0 ... 150
     private static let estimatedSessionRowSpacing: CGFloat = 6
     private static let estimatedActionableSessionHeight: CGFloat = 196
     private static let estimatedApprovalSessionHeight: CGFloat = 248
@@ -118,9 +117,8 @@ final class CodexModuleModel: ObservableObject, IslandModule {
             forKey: IslandDefaults.codexStandardConversationCardHeightKey
         )
         if savedCardHeight.isFinite,
-           savedCardHeight >= 48,
-           savedCardHeight <= 260 {
-            standardConversationCardHeight = CGFloat(savedCardHeight)
+           Self.standardConversationCardHeightRange.contains(CGFloat(savedCardHeight)) {
+            standardConversationCardHeight = CGFloat(savedCardHeight).rounded()
         }
 
         startupRecentConversationPopupEnabled = IslandDefaults.defaults.object(
@@ -185,11 +183,14 @@ final class CodexModuleModel: ObservableObject, IslandModule {
     }
 
     func updateStandardConversationCardHeight(_ height: CGFloat) {
-        guard height.isFinite, height >= 48, height <= 260 else {
+        guard height.isFinite else {
             return
         }
 
-        let normalizedHeight = ceil(height)
+        let normalizedHeight = min(
+            max(height.rounded(), Self.standardConversationCardHeightRange.lowerBound),
+            Self.standardConversationCardHeightRange.upperBound
+        )
         guard abs(standardConversationCardHeight - normalizedHeight) >= 1 else {
             return
         }
@@ -199,6 +200,7 @@ final class CodexModuleModel: ObservableObject, IslandModule {
             Double(normalizedHeight),
             forKey: IslandDefaults.codexStandardConversationCardHeightKey
         )
+        IslandDefaults.defaults.synchronize()
     }
 
     var sessionBuckets: CodexIslandSessionBuckets {

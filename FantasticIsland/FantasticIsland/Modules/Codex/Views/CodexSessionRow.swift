@@ -140,6 +140,9 @@ struct CodexIslandSessionRow: View {
     let referenceDate: Date
     var isActionable: Bool = false
     var surfaceStyle: SurfaceStyle = .standard
+    /// Only standard, non-actionable summary rows use this fixed height.
+    /// Peek cards and action-required cards keep their existing sizing.
+    var standardCardHeight: CGFloat? = nil
     var onApprove: ((CodexApprovalAction) -> Void)?
     var onAnswer: ((CodexQuestionResponse) -> Void)?
     var onReply: ((String) -> Void)?
@@ -163,6 +166,10 @@ struct CodexIslandSessionRow: View {
                     .padding(.bottom, 14)
             }
         }
+        // Keep the card's horizontal leading alignment, but center its
+        // contents vertically while the user changes the standard card height.
+        .frame(height: standardCardHeight, alignment: .leading)
+        .clipped()
         .islandModuleCardSurface(
             cornerRadius: IslandCardMetrics.moduleCardCornerRadius,
             fillColor: rowFillColor,

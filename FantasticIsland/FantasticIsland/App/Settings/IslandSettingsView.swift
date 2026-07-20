@@ -498,6 +498,17 @@ struct IslandSettingsView: View {
                 )
             }
 
+            SettingsCard(title: "Conversation Card") {
+                CodexConversationCardHeightRow(
+                    title: "Summary Card Height",
+                    detail: "Controls the complete standard Codex summary card, including its background, border, and contents. Width follows the island; startup popups and action cards are unchanged.",
+                    value: Binding(
+                        get: { model.codexFanModule.standardConversationCardHeight },
+                        set: { model.codexFanModule.updateStandardConversationCardHeight($0) }
+                    )
+                )
+            }
+
             SettingsCard {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack(alignment: .top, spacing: 16) {
@@ -1642,6 +1653,47 @@ private struct SettingsControlRow<Accessory: View>: View {
 
             accessory
                 .fixedSize()
+        }
+    }
+}
+
+private struct CodexConversationCardHeightRow: View {
+    let title: String
+    let detail: String
+    @Binding var value: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(LocalizedStringKey(title))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+
+                    Text(LocalizedStringKey(detail))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                Text("\(Int(value.rounded())) pt")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .frame(width: 58, alignment: .trailing)
+            }
+
+            Slider(
+                value: Binding(
+                    get: { Double(value) },
+                    set: { value = CGFloat($0) }
+                ),
+                in: 0 ... 150,
+                step: 1
+            )
+            .frame(maxWidth: .infinity)
+            .tint(.white.opacity(0.88))
         }
     }
 }
