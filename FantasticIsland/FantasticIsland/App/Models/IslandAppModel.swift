@@ -641,12 +641,11 @@ final class IslandAppModel: ObservableObject {
         presentedActivity = activity
         openReason = nil
         islandPeeking = true
-        startTransition(from: fromState, to: logicalPresentationState) { [weak self] in
-            guard let self else {
-                return
-            }
-            self.shellController.prepareForPeek(using: self)
-        }
+        // Resolve the final Peek panel frame before publishing the animated
+        // transition. This prevents the first rendered frame from using the
+        // old collapsed frame and then resizing underneath the notification.
+        shellController.prepareForPeek(using: self)
+        startTransition(from: fromState, to: logicalPresentationState)
         updateNotificationAutoCollapse()
     }
 
@@ -1858,12 +1857,10 @@ final class IslandAppModel: ObservableObject {
         openReason = nil
         islandPeeking = true
         setIslandExpanded(false, shouldReposition: false)
-        startTransition(from: fromState, to: logicalPresentationState) { [weak self] in
-            guard let self else {
-                return
-            }
-            self.shellController.prepareForPeek(using: self)
-        }
+        // Size the hosting panel from the final Peek metrics before the
+        // transition state is rendered, eliminating the startup resize flash.
+        shellController.prepareForPeek(using: self)
+        startTransition(from: fromState, to: logicalPresentationState)
     }
 
     private func collapseIslandFromDebugTool() {
@@ -2019,9 +2016,23 @@ final class IslandAppModel: ObservableObject {
                 maximumHeight
             )
         case .peek:
-            return CodexIslandPeekMetrics.contentTopPadding
+            // Codex peek cards have a bounded title/prompt/summary layout.
+            // Keep the first presentation at its deterministic estimate;
+            // letting the first PreferenceKey measurement resize the shell
+            // creates the visible startup jump. Other modules retain the
+            // measured-height fallback.
+            if moduleID == CodexModuleModel.moduleID {
+                return preferredHeight
+            }
+
+            let measuredPeekHeight = CodexIslandPeekMetrics.contentTopPadding
                 + measuredContentHeight
                 + CodexIslandPeekMetrics.contentBottomPadding
+            // Keep the first peek at its deterministic estimate when SwiftUI
+            // reports a transiently small geometry value. It may grow when
+            // real content is taller, but it must not shrink and then jump
+            // after the notification has already appeared.
+            return max(preferredHeight, measuredPeekHeight)
         }
     }
 

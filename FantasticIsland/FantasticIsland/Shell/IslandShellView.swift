@@ -101,7 +101,20 @@ struct IslandShellView: View {
             switch model.transitionPhase {
             case .morphing, .revealingContent:
                 return transitionPlan.to.visualMode
-            case .preparing, .stable:
+            case .preparing:
+                // Peek's AppKit panel is prepared at its final frame before
+                // this transition is published. Rendering the old closed
+                // geometry during this phase made the first SwiftUI frame
+                // use a different coordinate space from the panel, so the
+                // notification card visibly moved once before centering.
+                // Only the closed -> peek path is pre-sized this way; other
+                // transitions keep their existing preparation state.
+                if transitionPlan.from.visualMode == .closed,
+                   transitionPlan.to.visualMode == .peek {
+                    return transitionPlan.to.visualMode
+                }
+                return transitionPlan.from.visualMode
+            case .stable:
                 return transitionPlan.from.visualMode
             }
         }
@@ -172,7 +185,9 @@ struct IslandShellView: View {
                 || model.transitionPhase == .stable
         }
 
-        return model.transitionPhase == .preparing && transitionPlan.from == .closed
+        return model.transitionPhase == .preparing
+            && transitionPlan.from == .closed
+            && visualMode == .closed
     }
 
     private var stableLiveExpandedVisible: Bool {
@@ -461,8 +476,12 @@ struct IslandShellView: View {
                         alignment: .leading
                     )
 
-                    peekContentLayer
-                        .frame(width: openBodyWidth, height: surfaceHeight, alignment: .top)
+                    peekContentLayer(contentWidth: openBodyWidth, surfaceHeight: surfaceHeight)
+                        // openBodyWidth excludes the shell's two outer
+                        // surface insets. Center that content body inside the
+                        // actual black surface so the gray notification card
+                        // has equal left and right margins.
+                        .frame(width: surfaceWidth, height: surfaceHeight, alignment: .center)
                         .clipped()
                 }
                 .frame(width: surfaceWidth, height: surfaceHeight, alignment: .top)
@@ -570,29 +589,37 @@ struct IslandShellView: View {
             .clipped()
     }
 
-    private var peekContentLayer: some View {
-        ZStack(alignment: .topLeading) {
+    @ViewBuilder
+    private func peekContentLayer(contentWidth: CGFloat, surfaceHeight: CGFloat) -> some View {
+        let contentInset = CodexIslandPeekMetrics.contentHorizontalInset
+        let cardWidth = max(0, contentWidth - (contentInset * 2))
+        let topInset = visualMode == .peek
+            ? CodexIslandPeekMetrics.contentTopPadding + expandedContentTopClearance
+            : CodexIslandChromeMetrics.expandedContentTopPadding + expandedContentTopClearance
+        let bottomInset = CodexIslandPeekMetrics.contentBottomPadding
+
+        // The panel is already sized to the peek surface. Keep the card in a
+        // single finite coordinate space and center it there; a second
+        // offset based on the hosting panel width was the source of the
+        // asymmetric margins during the first presentation.
+        ZStack(alignment: .center) {
             if let snapshot = outgoingPeekSnapshot {
-                peekContent(snapshot: snapshot)
+                peekContent(snapshot: snapshot, width: cardWidth)
                     .opacity(outgoingPeekOpacity)
-                    .padding(.horizontal, CodexIslandPeekMetrics.contentHorizontalInset) // peek 内容的左右边距由壳层统一提供
-                    .padding(.bottom, CodexIslandPeekMetrics.contentBottomPadding) // peek 内容的底部留白由容器统一控制
             }
 
             if let snapshot = incomingPeekSnapshot {
-                peekContent(snapshot: snapshot)
+                peekContent(snapshot: snapshot, width: cardWidth)
                     .opacity(incomingPeekOpacity)
-                    .padding(.horizontal, CodexIslandPeekMetrics.contentHorizontalInset)
-                    .padding(.bottom, CodexIslandPeekMetrics.contentBottomPadding)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .padding(
-            .top,
-            visualMode == .peek
-                ? CodexIslandPeekMetrics.contentTopPadding + expandedContentTopClearance
-                : CodexIslandChromeMetrics.expandedContentTopPadding + expandedContentTopClearance
-        ) // peek 与 expanded 分别使用各自的顶部留白；带硬件刘海时让 opened 内容整体下移
+        .frame(
+            width: contentWidth,
+            height: max(0, surfaceHeight - topInset - bottomInset),
+            alignment: .center
+        )
+        .padding(.top, topInset)
+        .padding(.bottom, bottomInset)
         .foregroundStyle(.white)
         .allowsHitTesting(model.peekCapturesMouseEvents && transitionPlan == nil && visualMode == .peek)
     }
@@ -621,9 +648,9 @@ struct IslandShellView: View {
         }
     }
 
-    private func peekContent(snapshot: IslandModuleRenderSnapshot) -> some View {
+    private func peekContent(snapshot: IslandModuleRenderSnapshot, width: CGFloat) -> some View {
         snapshot.view
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: width, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .background {
                 GeometryReader { geometry in
@@ -905,6 +932,11 @@ struct IslandShellView: View {
 
     private func shouldPremeasureModuleContent(width: CGFloat) -> Bool {
         width > 0
+            // Codex owns a data-driven empty/loading layout. Premeasuring its
+            // hidden snapshot while the island is closed can publish a stale
+            // height before the live view is mounted, which changes the
+            // configured expanded viewport on startup (notably at 5pt).
+            // Its live ScrollView remains the source of truth once opened.
             && model.selectedModuleID != CodexModuleModel.moduleID
             && !model.islandExpanded
             && !model.islandPeeking

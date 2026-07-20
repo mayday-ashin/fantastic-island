@@ -48,6 +48,9 @@ final class IslandShellController {
     private var closedActivationPanel: IslandClosedActivationPanel?
     private var screenObserver: NSObjectProtocol?
     private var systemVolumeObserver: NSObjectProtocol?
+    private var applicationActivationObserver: NSObjectProtocol?
+    private var workspaceSessionObserver: NSObjectProtocol?
+    private var startupVisibilityRecoveryGeneration = 0
     private var globalClickMonitor: Any?
     private var localClickMonitor: Any?
     private var globalMouseMoveMonitor: Any?
@@ -78,6 +81,20 @@ final class IslandShellController {
                 self?.reposition()
             }
         }
+        applicationActivationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleStartupVisibilityRecovery()
+        }
+        workspaceSessionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.sessionDidBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleStartupVisibilityRecovery()
+        }
     }
 
     deinit {
@@ -86,6 +103,12 @@ final class IslandShellController {
         }
         if let systemVolumeObserver {
             NotificationCenter.default.removeObserver(systemVolumeObserver)
+        }
+        if let applicationActivationObserver {
+            NotificationCenter.default.removeObserver(applicationActivationObserver)
+        }
+        if let workspaceSessionObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceSessionObserver)
         }
     }
 
@@ -108,6 +131,32 @@ final class IslandShellController {
         orderPanelFront(panel, activate: model.islandExpanded)
         syncClosedActivationPanel(using: model, on: screen)
         startEventMonitoring()
+        scheduleStartupVisibilityRecovery()
+    }
+
+    /// Barbee can reorder its menu-bar rendering window after login. Reassert
+    /// only the existing window order; do not activate the app or alter the
+    /// island's logical presentation state.
+    private func scheduleStartupVisibilityRecovery() {
+        startupVisibilityRecoveryGeneration += 1
+        let generation = startupVisibilityRecoveryGeneration
+
+        for delay: TimeInterval in [0.35, 1.2] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self,
+                      self.startupVisibilityRecoveryGeneration == generation,
+                      let model = self.model,
+                      let panel = self.panel else {
+                    return
+                }
+
+                self.reposition(refreshRootView: false)
+                panel.orderFrontRegardless()
+                if !model.islandUsesOpenedVisualState {
+                    self.closedActivationPanel?.orderFrontRegardless()
+                }
+            }
+        }
     }
 
     func prepareForExpansion(using model: IslandAppModel) {
@@ -142,7 +191,6 @@ final class IslandShellController {
 
         let panel = self.panel ?? makePanel(using: model)
         self.panel = panel
-        refreshRootViewIfNeeded(using: model, on: resolvedPanelScreen(for: panel))
 
         guard let screen = resolvedPanelScreen(for: panel) else {
             return
@@ -153,6 +201,15 @@ final class IslandShellController {
             IslandTransitionDiagnostics.panel("prepare peek frame=\(NSStringFromRect(targetFrame))")
             panel.setFrame(targetFrame, display: false)
         }
+
+        // Establish the final AppKit bounds before rebuilding the SwiftUI
+        // root view.  Rebuilding first used the old collapsed panel size for
+        // the first layout pass; the panel then grew on the next run-loop
+        // turn, which made the gray peek card appear off-centre for one frame.
+        // The notification is now laid out in the same bounds in which it is
+        // first shown.
+        refreshRootViewIfNeeded(using: model, on: screen, force: true)
+        panel.contentView?.layoutSubtreeIfNeeded()
 
         computeNotchRect(screen: screen)
         let isInteractive = model.peekCapturesMouseEvents
@@ -376,7 +433,9 @@ final class IslandShellController {
 
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = false
-        panel.level = .statusBar
+        // Keep the shell above Barbee's status-bar rendering window without
+        // using the disruptive screen-saver level.
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
         panel.sharingType = .readOnly
         panel.backgroundColor = .clear
         panel.isOpaque = false
@@ -467,8 +526,12 @@ final class IslandShellController {
     private func holdingPanelSize(for model: IslandAppModel, on screen: NSScreen) -> CGSize {
         let insets = panelShadowInsets
         let expandedPanelWidth = expandedShellWidth(for: model, on: screen)
+        // A peek notification has its own centered surface. Keeping the
+        // hosting panel at expanded width left the visible peek shell
+        // attached to one side of a wider transparent panel, which made the
+        // Codex card look horizontally misaligned after startup.
         let panelWidth = model.peekCapturesMouseEvents
-            ? max(expandedPanelWidth, peekShellWidth(for: screen))
+            ? peekShellWidth(for: screen)
             : expandedPanelWidth
         let targetOpenedContentHeight =
             model.peekCapturesMouseEvents
@@ -791,7 +854,7 @@ final class IslandShellController {
 
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = false
-        panel.level = .statusBar
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
         panel.sharingType = .readOnly
         panel.backgroundColor = .clear
         panel.isOpaque = false

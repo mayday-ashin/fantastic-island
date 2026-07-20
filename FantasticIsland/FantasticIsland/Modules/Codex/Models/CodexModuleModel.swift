@@ -344,10 +344,6 @@ final class CodexModuleModel: ObservableObject, IslandModule {
     }
 
     var preferredOpenedContentHeight: CGFloat {
-        guard !islandListSessions.isEmpty else {
-            return Self.preferredEmptyExpandedContentHeight
-        }
-
         let estimatedContentHeight =
             Self.estimatedGlobalInfoCardHeight
             + Self.estimatedContentSpacing
@@ -369,6 +365,15 @@ final class CodexModuleModel: ObservableObject, IslandModule {
         }
 
         let sessionCount = islandListSessions.count
+        guard sessionCount > 0 else {
+            // The empty Codex page still contains the Global Info card,
+            // token heatmap, and the empty-state card. Returning zero here
+            // made the startup fallback shorter than the actual view, so a
+            // user-defined small expanded height clipped the page until a
+            // conversation was discovered.
+            return CodexExpandedMetrics.emptyStateMinimumHeight
+        }
+
         let rowsHeight =
             (CGFloat(sessionCount) * Self.estimatedSessionRowHeight)
             + (CGFloat(max(sessionCount - 1, 0)) * Self.estimatedSessionRowSpacing)

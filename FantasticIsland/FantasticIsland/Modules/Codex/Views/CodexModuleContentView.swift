@@ -159,6 +159,10 @@ struct CodexModuleContentView: View {
             .padding(.horizontal, CodexPeekMetrics.cardHorizontalPadding)
             .padding(.vertical, CodexPeekMetrics.cardVerticalPadding)
         }
+        // Make the card part of the peek surface's measured content width.
+        // Without this frame the inner VStack keeps its intrinsic width and
+        // the rounded background is visibly biased toward the leading edge.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: CodexExpandedMetrics.cardCornerRadius, style: .continuous)
                 .fill(Color.white.opacity(CodexPeekMetrics.backgroundOpacity))
