@@ -2006,6 +2006,17 @@ final class IslandAppModel: ObservableObject {
 
         switch resolvedPresentation {
         case .standard, .activity:
+            // Codex's standard page has two valid data states: the empty
+            // placeholder and the first loaded conversation summary. Their
+            // measured heights are not identical, but their configured
+            // expanded viewport must be. Otherwise the loaded state shrinks
+            // the shell and the empty state becomes scrollable at the same
+            // user-defined height.
+            if resolvedPresentation == .standard,
+               moduleID == CodexModuleModel.moduleID {
+                return maximumHeight
+            }
+
             return min(
                 max(
                     measuredContentHeight

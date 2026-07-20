@@ -17,6 +17,7 @@ enum IslandDefaults {
     static let expandedHeightAdjustmentKey = "island.settings.layout.expandedHeightAdjustment"
     static let playerTrackSwitchPopupEnabledKey = "island.settings.player.trackSwitchPopupEnabled"
     static let codexStartupRecentConversationPopupEnabledKey = "island.settings.codex.startupRecentConversationPopupEnabled"
+    static let codexStandardConversationCardHeightKey = "island.settings.codex.standardConversationCardHeight"
     static let expansionTriggerModeKey = "island.settings.interaction.expansionTriggerMode"
     static let collapseTriggerModeKey = "island.settings.interaction.collapseTriggerMode"
     static let hoverExpansionDelayKey = "island.settings.interaction.hoverExpansionDelay"

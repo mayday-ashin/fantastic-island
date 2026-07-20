@@ -1,6 +1,6 @@
 import SwiftUI
 
-private struct GlobalInfoCardHeightKey: PreferenceKey {
+private struct StandardConversationCardHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -26,6 +26,8 @@ struct CodexModuleRenderState {
     let hasFiveHourQuota: Bool
     let hasWeekQuota: Bool
     let tokenUsageHeatmap: CodexTokenHeatmapSnapshot
+    let standardConversationCardHeight: CGFloat
+    let updateStandardConversationCardHeight: (CGFloat) -> Void
     let approvePermission: (String, CodexApprovalAction) -> Void
     let answerQuestion: (String, CodexQuestionResponse) -> Void
     let replyToSession: (String, String) -> Void
@@ -45,31 +47,33 @@ struct CodexModuleLiveContentView: View {
 
 struct CodexModuleContentView: View {
     let state: CodexModuleRenderState
-    @State private var measuredGlobalInfoCardHeight = Self.estimatedGlobalInfoCardHeight
-
-    private static let estimatedGlobalInfoCardHeight: CGFloat = 58
-    private static let alignedModuleBodyHeight: CGFloat =
-        CodexIslandChromeMetrics.windDrivePanelHeight
-        - CodexIslandChromeMetrics.moduleNavigationRowHeight
-        - CodexIslandChromeMetrics.moduleColumnSpacing
 
     var body: some View {
-        switch state.presentation {
-        case .standard:
-            VStack(alignment: .leading, spacing: CodexExpandedMetrics.contentSpacing) {
-                globalInfoCard
-                tokenHeatmapCard
+        Group {
+            switch state.presentation {
+            case .standard:
+                VStack(alignment: .leading, spacing: CodexExpandedMetrics.contentSpacing) {
+                    globalInfoCard
+                    tokenHeatmapCard
 
-                if state.islandListSessions.isEmpty {
-                    emptyStateCard
-                } else {
-                    sessionList
+                    if state.islandListSessions.isEmpty {
+                        emptyStateCard
+                    } else {
+                        sessionList
+                    }
                 }
+            case let .activity(activity):
+                activityContent(for: activity)
+            case let .peek(activity):
+                peekContent(for: activity)
             }
-        case let .activity(activity):
-            activityContent(for: activity)
-        case let .peek(activity):
-            peekContent(for: activity)
+        }
+        .onPreferenceChange(StandardConversationCardHeightKey.self) { height in
+            guard height > 0 else {
+                return
+            }
+
+            state.updateStandardConversationCardHeight(height)
         }
     }
 
@@ -262,14 +266,30 @@ struct CodexModuleContentView: View {
         } else {
             VStack(spacing: CodexExpandedMetrics.sectionRowSpacing) {
                 ForEach(state.islandListSessions) { session in
+                    let isActionable = session.phase.requiresAttention || session.id == state.sessionSurface.sessionID
+
                     CodexIslandSessionRow(
                         session: session,
                         referenceDate: .now,
-                        isActionable: session.phase.requiresAttention || session.id == state.sessionSurface.sessionID,
+                        isActionable: isActionable,
                         onApprove: { state.approvePermission(session.id, $0) },
                         onAnswer: { state.answerQuestion(session.id, $0) },
                         onReply: { state.replyToSession(session.id, $0) },
                         onJump: { state.jumpToSession(session.id) }
+                    )
+                    .background {
+                        if !isActionable {
+                            GeometryReader { geometry in
+                                Color.clear.preference(
+                                    key: StandardConversationCardHeightKey.self,
+                                    value: geometry.size.height
+                                )
+                            }
+                        }
+                    }
+                    .frame(
+                        minHeight: state.standardConversationCardHeight,
+                        alignment: .topLeading
                     )
                 }
             }
@@ -316,18 +336,6 @@ struct CodexModuleContentView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
-        }
-        .background {
-            GeometryReader { geometry in
-                Color.clear.preference(key: GlobalInfoCardHeightKey.self, value: geometry.size.height)
-            }
-        }
-        .onPreferenceChange(GlobalInfoCardHeightKey.self) { height in
-            guard height > 0, abs(measuredGlobalInfoCardHeight - height) >= 1 else {
-                return
-            }
-
-            measuredGlobalInfoCardHeight = height
         }
     }
 
@@ -394,13 +402,10 @@ struct CodexModuleContentView: View {
     }
 
     private var emptyStateMinimumHeight: CGFloat {
-        let heatmapHeight: CGFloat = 108
-        let remainingHeight =
-            Self.alignedModuleBodyHeight
-            - measuredGlobalInfoCardHeight
-            - heatmapHeight
-            - (CodexExpandedMetrics.contentSpacing * 2)
-        return max(CodexExpandedMetrics.emptyStateMinimumHeight, remainingHeight)
+        // Do not derive this from asynchronously measured cards above it.
+        // Quota and heatmap data can arrive later and must not resize the
+        // empty state relative to a loaded conversation summary.
+        return state.standardConversationCardHeight
     }
 
     private func sectionCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {

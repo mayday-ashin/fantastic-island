@@ -57,7 +57,11 @@ final class CodexModuleModel: ObservableObject, IslandModule {
     private static let estimatedTokenHeatmapCardHeight: CGFloat = 96
     private static let tokenUsageHeatmapDayCount = 365
     private static let estimatedContentSpacing: CGFloat = 12
-    private static let estimatedSessionRowHeight: CGFloat = 88
+    // A normal non-actionable summary row is shorter than the previous
+    // empty-state placeholder. This is only the first-launch fallback; once
+    // a real summary is rendered, its measured height is persisted and used
+    // for both states.
+    private static let standardConversationCardHeightFallback: CGFloat = 72
     private static let estimatedSessionRowSpacing: CGFloat = 6
     private static let estimatedActionableSessionHeight: CGFloat = 196
     private static let estimatedApprovalSessionHeight: CGFloat = 248
@@ -75,6 +79,7 @@ final class CodexModuleModel: ObservableObject, IslandModule {
     @Published private(set) var isNotificationMode = false
     @Published private(set) var lastActionMessage: String?
     @Published private(set) var startupRecentConversationPopupEnabled = true
+    @Published private(set) var standardConversationCardHeight: CGFloat = standardConversationCardHeightFallback
 
     let id = CodexModuleModel.moduleID
     let title = "Codex"
@@ -109,6 +114,15 @@ final class CodexModuleModel: ObservableObject, IslandModule {
     private var pendingHookApprovals: [String: PendingHookApprovalDecision] = [:]
 
     init() {
+        let savedCardHeight = IslandDefaults.defaults.double(
+            forKey: IslandDefaults.codexStandardConversationCardHeightKey
+        )
+        if savedCardHeight.isFinite,
+           savedCardHeight >= 48,
+           savedCardHeight <= 260 {
+            standardConversationCardHeight = CGFloat(savedCardHeight)
+        }
+
         startupRecentConversationPopupEnabled = IslandDefaults.defaults.object(
             forKey: IslandDefaults.codexStartupRecentConversationPopupEnabledKey
         ) == nil || IslandDefaults.defaults.bool(
@@ -168,6 +182,23 @@ final class CodexModuleModel: ObservableObject, IslandModule {
             forKey: IslandDefaults.codexStartupRecentConversationPopupEnabledKey
         )
         IslandDefaults.defaults.synchronize()
+    }
+
+    func updateStandardConversationCardHeight(_ height: CGFloat) {
+        guard height.isFinite, height >= 48, height <= 260 else {
+            return
+        }
+
+        let normalizedHeight = ceil(height)
+        guard abs(standardConversationCardHeight - normalizedHeight) >= 1 else {
+            return
+        }
+
+        standardConversationCardHeight = normalizedHeight
+        IslandDefaults.defaults.set(
+            Double(normalizedHeight),
+            forKey: IslandDefaults.codexStandardConversationCardHeightKey
+        )
     }
 
     var sessionBuckets: CodexIslandSessionBuckets {
@@ -366,16 +397,15 @@ final class CodexModuleModel: ObservableObject, IslandModule {
 
         let sessionCount = islandListSessions.count
         guard sessionCount > 0 else {
-            // The empty Codex page still contains the Global Info card,
-            // token heatmap, and the empty-state card. Returning zero here
-            // made the startup fallback shorter than the actual view, so a
-            // user-defined small expanded height clipped the page until a
-            // conversation was discovered.
-            return CodexExpandedMetrics.emptyStateMinimumHeight
+            // The empty placeholder must use the same reservation as the
+            // first standard conversation summary row. Otherwise the same
+            // user-defined expanded height resolves differently before and
+            // after the first conversation is loaded.
+            return standardConversationCardHeight
         }
 
         let rowsHeight =
-            (CGFloat(sessionCount) * Self.estimatedSessionRowHeight)
+            (CGFloat(sessionCount) * standardConversationCardHeight)
             + (CGFloat(max(sessionCount - 1, 0)) * Self.estimatedSessionRowSpacing)
         let showsFooter = canCollapseSessionList
         return rowsHeight
@@ -394,7 +424,7 @@ final class CodexModuleModel: ObservableObject, IslandModule {
             case .transientNotification:
                 estimatedBodyHeight = Self.estimatedTransientSessionHeight
             case .persistentPresence:
-                estimatedBodyHeight = Self.estimatedSessionRowHeight
+                estimatedBodyHeight = standardConversationCardHeight
             }
 
             return CodexIslandChromeMetrics.moduleChromeHeight
@@ -456,6 +486,10 @@ final class CodexModuleModel: ObservableObject, IslandModule {
             hasFiveHourQuota: hasFiveHourQuota,
             hasWeekQuota: hasWeekQuota,
             tokenUsageHeatmap: tokenUsageHeatmap,
+            standardConversationCardHeight: standardConversationCardHeight,
+            updateStandardConversationCardHeight: { [weak self] height in
+                self?.updateStandardConversationCardHeight(height)
+            },
             approvePermission: { [weak self] sessionID, action in
                 Task { @MainActor in
                     self?.approvePermission(for: sessionID, action: action)
