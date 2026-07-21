@@ -54,12 +54,23 @@ final class CodexModuleModel: ObservableObject, IslandModule {
         CodexIslandChromeMetrics.expandedContentTopPadding
         + CodexIslandChromeMetrics.windDrivePanelHeight
     private static let estimatedGlobalInfoCardHeight: CGFloat = 58
-    private static let estimatedTokenHeatmapCardHeight: CGFloat = 96
+    // The rendered heatmap occupies about 108pt including its month labels
+    // and legend. 96pt under-reserved the Codex viewport and made users add
+    // roughly 10-12pt to the expanded-height adjustment before the page fit.
+    private static let estimatedTokenHeatmapCardHeight: CGFloat = 108
     private static let tokenUsageHeatmapDayCount = 365
     private static let estimatedContentSpacing: CGFloat = 12
-    // The standard summary card height is user-controlled. Keep the existing
-    // default so an upgrade does not make the card unexpectedly disappear.
-    private static let standardConversationCardHeightFallback: CGFloat = 72
+    // Folder 1's summary row is naturally about 65-66pt tall: headline,
+    // summary line, spacing, and the row's 14pt vertical padding. 65pt keeps
+    // the fixed card visually identical to folder 1 while making the empty
+    // and loaded states reserve the same amount of space.
+    private static let standardConversationCardHeightFallback: CGFloat = 65
+    // Folder 1 deliberately reserves 88pt for a standard session section.
+    // This is an outer viewport budget, not the rendered gray card height.
+    // Keeping this budget prevents a small expanded-height adjustment from
+    // making the whole Codex page scroll merely because the card is compact.
+    private static let estimatedStandardConversationReservationHeight: CGFloat = 88
+    private static let legacyConversationCardHeightFallbacks: Set<CGFloat> = [72, 88]
     private static let standardConversationCardHeightRange: ClosedRange<CGFloat> = 0 ... 150
     private static let estimatedSessionRowSpacing: CGFloat = 6
     private static let estimatedActionableSessionHeight: CGFloat = 196
@@ -118,7 +129,20 @@ final class CodexModuleModel: ObservableObject, IslandModule {
         )
         if savedCardHeight.isFinite,
            Self.standardConversationCardHeightRange.contains(CGFloat(savedCardHeight)) {
-            standardConversationCardHeight = CGFloat(savedCardHeight).rounded()
+            let savedHeight = CGFloat(savedCardHeight).rounded()
+            // 72pt was the previous measured fallback and 88pt was the
+            // previous fixed-card fallback. Migrate either legacy value once
+            // to folder 1's actual loaded-row height; other user selections
+            // remain untouched.
+            if Self.legacyConversationCardHeightFallbacks.contains(savedHeight) {
+                standardConversationCardHeight = Self.standardConversationCardHeightFallback
+                IslandDefaults.defaults.set(
+                    Double(Self.standardConversationCardHeightFallback),
+                    forKey: IslandDefaults.codexStandardConversationCardHeightKey
+                )
+            } else {
+                standardConversationCardHeight = savedHeight
+            }
         }
 
         startupRecentConversationPopupEnabled = IslandDefaults.defaults.object(
@@ -398,16 +422,19 @@ final class CodexModuleModel: ObservableObject, IslandModule {
         }
 
         let sessionCount = islandListSessions.count
+        let standardReservationHeight = max(
+            Self.estimatedStandardConversationReservationHeight,
+            standardConversationCardHeight
+        )
         guard sessionCount > 0 else {
-            // The empty placeholder must use the same reservation as the
-            // first standard conversation summary row. Otherwise the same
-            // user-defined expanded height resolves differently before and
-            // after the first conversation is loaded.
-            return standardConversationCardHeight
+            // Reserve the same outer section budget before and after a
+            // conversation is discovered, while the rendered card itself
+            // remains at the compact user-facing height.
+            return standardReservationHeight
         }
 
         let rowsHeight =
-            (CGFloat(sessionCount) * standardConversationCardHeight)
+            (CGFloat(sessionCount) * standardReservationHeight)
             + (CGFloat(max(sessionCount - 1, 0)) * Self.estimatedSessionRowSpacing)
         let showsFooter = canCollapseSessionList
         return rowsHeight
@@ -426,7 +453,10 @@ final class CodexModuleModel: ObservableObject, IslandModule {
             case .transientNotification:
                 estimatedBodyHeight = Self.estimatedTransientSessionHeight
             case .persistentPresence:
-                estimatedBodyHeight = standardConversationCardHeight
+                estimatedBodyHeight = max(
+                    Self.estimatedStandardConversationReservationHeight,
+                    standardConversationCardHeight
+                )
             }
 
             return CodexIslandChromeMetrics.moduleChromeHeight

@@ -357,34 +357,43 @@ struct CodexModuleContentView: View {
     }
 
     private var emptyStateCardContent: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             Text("No live conversations")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.72))
 
             Text("Open Codex to populate live sessions here.")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.white.opacity(0.38))
         }
         .padding(.horizontal, 18)
-        .background(Color.white.opacity(0.02), in: RoundedRectangle(cornerRadius: CodexExpandedMetrics.cardCornerRadius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: CodexExpandedMetrics.cardCornerRadius, style: .continuous)
-                .stroke(Color.white.opacity(CodexExpandedMetrics.cardBorderOpacity), lineWidth: 1)
-        }
+        .padding(.vertical, 6)
     }
 
     @ViewBuilder
     private func emptyStateCard(fixedHeight: CGFloat? = nil) -> some View {
-        if let fixedHeight {
+        // Keep the empty placeholder's outer geometry identical to a normal
+        // Codex session row.  Previously the background was attached to the
+        // intrinsic text stack, so when no session existed SwiftUI could
+        // measure this branch at the text's width instead of the island's
+        // available width.  Loaded rows did not have that problem because
+        // CodexIslandSessionRow owns a full-width card surface.
+        let height = fixedHeight ?? emptyStateMinimumHeight
+
+        VStack(alignment: .leading, spacing: 0) {
             emptyStateCardContent
-                .frame(maxWidth: .infinity)
-                .frame(height: fixedHeight, alignment: .center)
-                .clipped()
-        } else {
-            emptyStateCardContent
-                .frame(maxWidth: .infinity, minHeight: emptyStateMinimumHeight, alignment: .center)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
+        .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .center)
+        .background(
+            Color.white.opacity(0.02),
+            in: RoundedRectangle(cornerRadius: CodexExpandedMetrics.cardCornerRadius, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: CodexExpandedMetrics.cardCornerRadius, style: .continuous)
+                .stroke(Color.white.opacity(CodexExpandedMetrics.cardBorderOpacity), lineWidth: 1)
+        }
+        .clipped()
     }
 
     private var emptyStateCard: some View { emptyStateCard() }
