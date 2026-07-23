@@ -37,6 +37,9 @@ final class IslandSystemVolumeController: NSObject, ObservableObject {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var observedDeviceID: AudioObjectID = kAudioObjectUnknown
+    private var currentDeviceListenerBlocks: [
+        (address: AudioObjectPropertyAddress, block: AudioObjectPropertyListenerBlock)
+    ] = []
     private var didInitialFetch = false
     private var previousVolumeBeforeMute: Float32 = 0.2
     private var softwareMuted = false
@@ -229,19 +232,29 @@ final class IslandSystemVolumeController: NSObject, ObservableObject {
 
         removeCurrentDeviceListeners()
         observedDeviceID = deviceID
-        let selectors: [(AudioObjectPropertySelector, UInt32)] = [
-            (kAudioDevicePropertyVolumeScalar, kAudioObjectPropertyElementMain),
-            (kAudioDevicePropertyMute, kAudioObjectPropertyElementMain),
+        let selectors: [AudioObjectPropertySelector] = [
+            kAudioDevicePropertyVolumeScalar,
+            kAudioDevicePropertyMute,
         ]
-        for (selector, element) in selectors {
-            var address = AudioObjectPropertyAddress(
-                mSelector: selector,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: element
-            )
-            guard AudioObjectHasProperty(deviceID, &address) else { continue }
-            AudioObjectAddPropertyListenerBlock(deviceID, &address, DispatchQueue.main) { [weak self] _, _ in
-                self?.refresh()
+        for selector in selectors {
+            for element in supportedPropertyElements(deviceID: deviceID, selector: selector) {
+                var address = AudioObjectPropertyAddress(
+                    mSelector: selector,
+                    mScope: kAudioDevicePropertyScopeOutput,
+                    mElement: element
+                )
+                let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                    self?.refresh()
+                }
+                guard AudioObjectAddPropertyListenerBlock(
+                    deviceID,
+                    &address,
+                    DispatchQueue.main,
+                    listener
+                ) == noErr else {
+                    continue
+                }
+                currentDeviceListenerBlocks.append((address: address, block: listener))
             }
         }
         refresh()
@@ -253,21 +266,48 @@ final class IslandSystemVolumeController: NSObject, ObservableObject {
 
     private func removeCurrentDeviceListeners() {
         guard observedDeviceID != kAudioObjectUnknown else { return }
-        let selectors: [(AudioObjectPropertySelector, UInt32)] = [
-            (kAudioDevicePropertyVolumeScalar, kAudioObjectPropertyElementMain),
-            (kAudioDevicePropertyMute, kAudioObjectPropertyElementMain),
-        ]
-        for (selector, element) in selectors {
+        for entry in currentDeviceListenerBlocks {
+            var address = entry.address
+            AudioObjectRemovePropertyListenerBlock(
+                observedDeviceID,
+                &address,
+                DispatchQueue.main,
+                entry.block
+            )
+        }
+        currentDeviceListenerBlocks.removeAll(keepingCapacity: true)
+        observedDeviceID = kAudioObjectUnknown
+    }
+
+    /// Bluetooth output devices commonly expose volume only on their channel
+    /// elements (usually 1 and 2), while built-in output also exposes the
+    /// main element. Always use the elements the device actually advertises.
+    private func supportedPropertyElements(
+        deviceID: AudioObjectID,
+        selector: AudioObjectPropertySelector
+    ) -> [UInt32] {
+        [
+            kAudioObjectPropertyElementMain,
+            1,
+            2,
+            3,
+            4,
+        ].filter { element in
             var address = AudioObjectPropertyAddress(
                 mSelector: selector,
                 mScope: kAudioDevicePropertyScopeOutput,
                 mElement: element
             )
-            AudioObjectRemovePropertyListenerBlock(observedDeviceID, &address, DispatchQueue.main) { [weak self] _, _ in
-                self?.refresh()
-            }
+            return AudioObjectHasProperty(deviceID, &address)
         }
-        observedDeviceID = kAudioObjectUnknown
+    }
+
+    private func supportedVolumeElements(deviceID: AudioObjectID) -> [UInt32] {
+        supportedPropertyElements(deviceID: deviceID, selector: kAudioDevicePropertyVolumeScalar)
+    }
+
+    private func supportedMuteElements(deviceID: AudioObjectID) -> [UInt32] {
+        supportedPropertyElements(deviceID: deviceID, selector: kAudioDevicePropertyMute)
     }
 
     private func defaultOutputDeviceID() -> AudioObjectID {
@@ -294,7 +334,17 @@ final class IslandSystemVolumeController: NSObject, ObservableObject {
     private func readVolume() -> Float32? {
         let deviceID = defaultOutputDeviceID()
         guard deviceID != kAudioObjectUnknown else { return nil }
-        let elements: [UInt32] = [kAudioObjectPropertyElementMain, 1, 2, 3, 4]
+
+        let elements = supportedVolumeElements(deviceID: deviceID)
+        guard !elements.isEmpty else { return nil }
+
+        // Prefer the device master value when it exists. For Bluetooth
+        // devices this is usually absent, so fall back to the channel mean.
+        if elements.contains(kAudioObjectPropertyElementMain),
+           let master = readScalar(deviceID: deviceID, element: kAudioObjectPropertyElementMain) {
+            return max(0, min(1, master))
+        }
+
         let values = elements.compactMap { readScalar(deviceID: deviceID, element: $0) }
         guard !values.isEmpty else { return nil }
         return max(0, min(1, values.reduce(0, +) / Float32(values.count)))
@@ -318,42 +368,70 @@ final class IslandSystemVolumeController: NSObject, ObservableObject {
     private func writeVolume(_ value: Float32) -> Bool {
         let deviceID = defaultOutputDeviceID()
         guard deviceID != kAudioObjectUnknown else { return false }
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectHasProperty(deviceID, &address) else { return false }
-        var volume = value
-        let size = UInt32(MemoryLayout<Float32>.size)
-        return AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &volume) == noErr
+
+        let elements = supportedVolumeElements(deviceID: deviceID)
+        guard !elements.isEmpty else { return false }
+
+        var didWrite = false
+        for element in elements {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyVolumeScalar,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: element
+            )
+            var volume = value
+            let size = UInt32(MemoryLayout<Float32>.size)
+            if AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &volume) == noErr {
+                didWrite = true
+            }
+        }
+        return didWrite
     }
 
     private func readMute(deviceID: AudioObjectID) -> Bool {
+        let elements = supportedMuteElements(deviceID: deviceID)
+        guard !elements.isEmpty else { return softwareMuted }
+
+        // A device is muted if its master or any exposed output channel says
+        // so. This also covers Bluetooth devices without a master element.
+        return elements.contains { element in
+            readMuteScalar(deviceID: deviceID, element: element) ?? false
+        }
+    }
+
+    private func readMuteScalar(deviceID: AudioObjectID, element: UInt32) -> Bool? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
+            mElement: element
         )
-        guard AudioObjectHasProperty(deviceID, &address) else { return softwareMuted }
+        guard AudioObjectHasProperty(deviceID, &address) else { return nil }
         var muted: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)
         guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &muted) == noErr else {
-            return softwareMuted
+            return nil
         }
         return muted != 0
     }
 
     private func setMute(deviceID: AudioObjectID, muted: Bool) -> Bool {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyMute,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectHasProperty(deviceID, &address) else { return false }
-        var value: UInt32 = muted ? 1 : 0
-        let size = UInt32(MemoryLayout<UInt32>.size)
-        return AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &value) == noErr
+        let elements = supportedMuteElements(deviceID: deviceID)
+        guard !elements.isEmpty else { return false }
+
+        var didWrite = false
+        for element in elements {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: element
+            )
+            var value: UInt32 = muted ? 1 : 0
+            let size = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &value) == noErr {
+                didWrite = true
+            }
+        }
+        return didWrite
     }
 
     private func isMutedInternal() -> Bool {
